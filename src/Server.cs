@@ -111,20 +111,22 @@ void HandleClient(Socket client)
             else if (command == "RPUSH" && parts.Length >= 3)
             {
                 string key = parts[1];
-                string element = parts[2];
+                // Get all elements to append (from index 2 onwards)
+                var elements = parts.Skip(2).ToArray();
                 
                 if (!dataStore.ContainsKey(key))
                 {
-                    var list = new List<string> { element };
+                    // Create new list with all elements
+                    var list = new List<string>(elements);
                     dataStore[key] = new StoredValue(list);
-                    response = ":1\r\n";
+                    response = $":{list.Count}\r\n";
                 }
                 else
                 {
-                    // Append to existing list
+                    // Append all elements to existing list
                     if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null)
                     {
-                        storedValue.List.Add(element);
+                        storedValue.List.AddRange(elements);
                         int count = storedValue.List.Count;
                         response = $":{count}\r\n";
                     }
