@@ -16,14 +16,12 @@ server.Start();
 
 while (true)
 {
-    Socket client = server.AcceptSocket(); // wait for client
-    
+    Socket client = server.AcceptSocket();
     Task.Run(() => HandleClient(client));
 }
 
 void HandleClient(Socket client)
 {
-    // Handle multiple commands on the same connection
     while (true)
     {
         try
@@ -39,7 +37,6 @@ void HandleClient(Socket client)
             // Parse RESP command
             string input = Encoding.UTF8.GetString(buffer, 0, bytesRead);
             string[] parts = ParseRespArray(input);
-            
             if (parts.Length == 0)
                 continue;
             
@@ -63,7 +60,6 @@ void HandleClient(Socket client)
                 string value = parts[2];
                 long? expiryMs = null;
                 
-                // Parse options (PX, EX)
                 for (int i = 3; i < parts.Length - 1; i++)
                 {
                     string option = parts[i].ToUpper();
@@ -125,7 +121,17 @@ void HandleClient(Socket client)
                 }
                 else
                 {
-                    response = "-ERR list operations not fully implemented\r\n";
+                    // Append to existing list
+                    if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null)
+                    {
+                        storedValue.List.Add(element);
+                        int count = storedValue.List.Count;
+                        response = $":{count}\r\n";
+                    }
+                    else
+                    {
+                        response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                    }
                 }
             }
             else
@@ -145,6 +151,7 @@ void HandleClient(Socket client)
     client.Close();
 }
 
+// Simple RESP array parser
 string[] ParseRespArray(string input)
 {
     var parts = new List<string>();
