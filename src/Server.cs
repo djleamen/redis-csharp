@@ -9,7 +9,7 @@ using System.Net.Sockets;
 using System.Text;
 
 // Thread-safe data store
-var dataStore = new ConcurrentDictionary<string, string>();
+var dataStore = new ConcurrentDictionary<string, StoredValue>();
 
 TcpListener server = new TcpListener(IPAddress.Any, 6379);
 server.Start();
@@ -61,15 +61,50 @@ void HandleClient(Socket client)
             {
                 string key = parts[1];
                 string value = parts[2];
-                dataStore[key] = value;
+                long? expiryMs = null;
+                
+                // Parse options (PX, EX)
+                for (int i = 3; i < parts.Length - 1; i++)
+                {
+                    string option = parts[i].ToUpper();
+                    if (option == "PX")
+                    {
+                        if (long.TryParse(parts[i + 1], out long px))
+                        {
+                            expiryMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + px;
+                        }
+                        break;
+                    }
+                    else if (option == "EX")
+                    {
+                        if (long.TryParse(parts[i + 1], out long ex))
+                        {
+                            expiryMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (ex * 1000);
+                        }
+                        break;
+                    }
+                }
+                
+                dataStore[key] = new StoredValue(value, expiryMs);
                 response = "+OK\r\n";
             }
             else if (command == "GET" && parts.Length > 1)
             {
                 string key = parts[1];
-                if (dataStore.TryGetValue(key, out string? value))
+                if (dataStore.TryGetValue(key, out StoredValue? storedValue))
                 {
-                    response = $"${value.Length}\r\n{value}\r\n";
+                    // Check if key has expired
+                    if (storedValue.ExpiryMs.HasValue && 
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > storedValue.ExpiryMs.Value)
+                    {
+                        // Key expired, remove it and return null
+                        dataStore.TryRemove(key, out _);
+                        response = "$-1\r\n";
+                    }
+                    else
+                    {
+                        response = $"${storedValue.Value.Length}\r\n{storedValue.Value}\r\n";
+                    }
                 }
                 else
                 {
@@ -121,3 +156,6 @@ string[] ParseRespArray(string input)
     
     return parts.ToArray();
 }
+
+// Store value and expiry time
+record StoredValue(string Value, long? ExpiryMs);
