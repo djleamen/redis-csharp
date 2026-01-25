@@ -111,6 +111,23 @@ void HandleClient(Socket client)
                     response = "$-1\r\n"; // Null bulk string
                 }
             }
+            // RPUSH - Append elements to a list
+            else if (command == "RPUSH" && parts.Length >= 3)
+            {
+                string key = parts[1];
+                string element = parts[2];
+                
+                if (!dataStore.ContainsKey(key))
+                {
+                    var list = new List<string> { element };
+                    dataStore[key] = new StoredValue(list);
+                    response = ":1\r\n";
+                }
+                else
+                {
+                    response = "-ERR list operations not fully implemented\r\n";
+                }
+            }
             else
             {
                 response = "-ERR unknown command\r\n";
@@ -158,4 +175,21 @@ string[] ParseRespArray(string input)
 }
 
 // Store value and expiry time
-record StoredValue(string Value, long? ExpiryMs);
+record StoredValue
+{
+    public string? Value { get; init; }
+    public List<string>? List { get; init; }
+    public long? ExpiryMs { get; init; }
+    
+    public StoredValue(string value, long? expiryMs = null)
+    {
+        Value = value;
+        ExpiryMs = expiryMs;
+    }
+    
+    public StoredValue(List<string> list, long? expiryMs = null)
+    {
+        List = list;
+        ExpiryMs = expiryMs;
+    }
+}
