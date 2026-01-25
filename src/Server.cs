@@ -14,6 +14,11 @@ while (true)
 {
     Socket client = server.AcceptSocket(); // wait for client
     
+    Task.Run(() => HandleClient(client));
+}
+
+void HandleClient(Socket client)
+{
     // Handle multiple commands on the same connection
     while (true)
     {
