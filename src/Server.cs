@@ -3,9 +3,13 @@
  * From CodeCrafters.io build-your-own-redis (C#)
  */
 
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+
+// Thread-safe data store
+var dataStore = new ConcurrentDictionary<string, string>();
 
 TcpListener server = new TcpListener(IPAddress.Any, 6379);
 server.Start();
@@ -42,6 +46,7 @@ void HandleClient(Socket client)
             string command = parts[0].ToUpper();
             string response;
             
+            // PING and ECHO
             if (command == "PING")
             {
                 response = "+PONG\r\n";
@@ -50,6 +55,26 @@ void HandleClient(Socket client)
             {
                 string message = parts[1];
                 response = $"${message.Length}\r\n{message}\r\n";
+            }
+            // SET and GET
+            else if (command == "SET" && parts.Length >= 3)
+            {
+                string key = parts[1];
+                string value = parts[2];
+                dataStore[key] = value;
+                response = "+OK\r\n";
+            }
+            else if (command == "GET" && parts.Length > 1)
+            {
+                string key = parts[1];
+                if (dataStore.TryGetValue(key, out string? value))
+                {
+                    response = $"${value.Length}\r\n{value}\r\n";
+                }
+                else
+                {
+                    response = "$-1\r\n"; // Null bulk string
+                }
             }
             else
             {
