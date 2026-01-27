@@ -135,6 +135,51 @@ void HandleClient(Socket client)
                     }
                 }
             }
+            // LRANGE - Retrieve elements from a list by range
+            else if (command == "LRANGE" && parts.Length >= 4)
+            {
+                string key = parts[1];
+
+                if (!int.TryParse(parts[2], out int start) || !int.TryParse(parts[3], out int stop))
+                {
+                    response = "-ERR value is not an integer or out of range\r\n";
+                }
+                else if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    response = "*0\r\n";
+                }
+                else if (storedValue.List == null)
+                {
+                    response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                }
+                else
+                {
+                    var list = storedValue.List;
+                    
+                    if (start >= list.Count || start > stop)
+                    {
+                        response = "*0\r\n";
+                    }
+                    else
+                    {
+                        int actualStop = Math.Min(stop, list.Count - 1);
+                        
+                        var rangeElements = new List<string>();
+                        for (int i = start; i <= actualStop; i++)
+                        {
+                            rangeElements.Add(list[i]);
+                        }
+                        
+                        var sb = new StringBuilder();
+                        sb.Append($"*{rangeElements.Count}\r\n");
+                        foreach (var element in rangeElements)
+                        {
+                            sb.Append($"${element.Length}\r\n{element}\r\n");
+                        }
+                        response = sb.ToString();
+                    }
+                }
+            }
             else
             {
                 response = "-ERR unknown command\r\n";
