@@ -156,6 +156,15 @@ void HandleClient(Socket client)
                 {
                     var list = storedValue.List;
                     
+                    if (start < 0)
+                    {
+                        start = Math.Max(0, list.Count + start);
+                    }
+                    if (stop < 0)
+                    {
+                        stop = Math.Max(0, list.Count + stop);
+                    }
+                    
                     if (start >= list.Count || start > stop)
                     {
                         response = "*0\r\n";
