@@ -123,7 +123,6 @@ void HandleClient(Socket client)
                 }
                 else
                 {
-                    // Append all elements to existing list
                     if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null)
                     {
                         storedValue.List.AddRange(elements);
