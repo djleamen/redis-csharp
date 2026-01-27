@@ -151,7 +151,8 @@ void HandleClient(Socket client)
                 {
                     if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null)
                     {
-                        for (int i = elements.Length - 1; i >= 0; i--)
+                        // Insert elements from left to right, each at position 0
+                        for (int i = 0; i < elements.Length; i++)
                         {
                             storedValue.List.Insert(0, elements[i]);
                         }
