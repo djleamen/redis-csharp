@@ -135,6 +135,35 @@ void HandleClient(Socket client)
                     }
                 }
             }
+            // LPUSH - Prepend elements to a list
+            else if (command == "LPUSH" && parts.Length >= 3)
+            {
+                string key = parts[1];
+                var elements = parts.Skip(2).ToArray();
+                
+                if (!dataStore.ContainsKey(key))
+                {
+                    var list = new List<string>(elements.Reverse());
+                    dataStore[key] = new StoredValue(list);
+                    response = $":{list.Count}\r\n";
+                }
+                else
+                {
+                    if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null)
+                    {
+                        for (int i = elements.Length - 1; i >= 0; i--)
+                        {
+                            storedValue.List.Insert(0, elements[i]);
+                        }
+                        int count = storedValue.List.Count;
+                        response = $":{count}\r\n";
+                    }
+                    else
+                    {
+                        response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                    }
+                }
+            }
             // LRANGE - Retrieve elements from a list by range
             else if (command == "LRANGE" && parts.Length >= 4)
             {
