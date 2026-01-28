@@ -151,7 +151,6 @@ void HandleClient(Socket client)
                 {
                     if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null)
                     {
-                        // Insert elements from left to right, each at position 0
                         for (int i = 0; i < elements.Length; i++)
                         {
                             storedValue.List.Insert(0, elements[i]);
@@ -217,6 +216,27 @@ void HandleClient(Socket client)
                         }
                         response = sb.ToString();
                     }
+                }
+            }
+            // LLEN - Get the length of a list
+            else if (command == "LLEN" && parts.Length >= 2)
+            {
+                string key = parts[1];
+                
+                if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    // Key doesn't exist, return 0
+                    response = ":0\r\n";
+                }
+                else if (storedValue.List == null)
+                {
+                    // Key exists but is not a list
+                    response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                }
+                else
+                {
+                    // Return the list length
+                    response = $":{storedValue.List.Count}\r\n";
                 }
             }
             else
