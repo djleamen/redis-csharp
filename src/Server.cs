@@ -504,20 +504,57 @@ async Task HandleClient(Socket client)
                 }
                 else
                 {
-                    // Parse and validate entry ID
-                    string[] idParts = entryId.Split('-');
-                    if (idParts.Length != 2 || !long.TryParse(idParts[0], out long millisTime))
+                    long millisTime;
+                    long seqNum;
+                    
+                    // Check if entire ID is auto-generated (*)
+                    if (entryId == "*")
                     {
-                        response = "-ERR Invalid stream ID specified as stream command argument\r\n";
+                        // Auto-generate both time and sequence number
+                        millisTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        
+                        // Check if this timestamp already exists in the stream
+                        if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.Stream != null && storedValue.Stream.Count > 0)
+                        {
+                            var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
+                            string[] lastIdParts = lastEntry.Id.Split('-');
+                            long lastMillisTime = long.Parse(lastIdParts[0]);
+                            long lastSeqNum = long.Parse(lastIdParts[1]);
+                            
+                            // If same time part, increment sequence number
+                            if (millisTime == lastMillisTime)
+                            {
+                                seqNum = lastSeqNum + 1;
+                            }
+                            // If current time is less than or equal to last time, use last time + 1
+                            else if (millisTime <= lastMillisTime)
+                            {
+                                millisTime = lastMillisTime;
+                                seqNum = lastSeqNum + 1;
+                            }
+                            else
+                            {
+                                seqNum = 0;
+                            }
+                        }
+                        else
+                        {
+                            seqNum = 0;
+                        }
+                        
+                        entryId = $"{millisTime}-{seqNum}";
                     }
+                    // Parse and validate entry ID
                     else
                     {
-                        long seqNum;
-                        
-                        // Check if sequence number is auto-generated (*)
-                        if (idParts[1] == "*")
+                        string[] idParts = entryId.Split('-');
+                        if (idParts.Length != 2 || !long.TryParse(idParts[0], out millisTime))
                         {
-                            // Auto-generate sequence number
+                            response = "-ERR Invalid stream ID specified as stream command argument\r\n";
+                        }
+                        else if (idParts[1] == "*")
+                        {
+                            // Auto-generate sequence number only
                             if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.Stream != null && storedValue.Stream.Count > 0)
                             {
                                 // Get the last entry
@@ -564,9 +601,10 @@ async Task HandleClient(Socket client)
                         {
                             response = "-ERR Invalid stream ID specified as stream command argument\r\n";
                         }
-                        
-                        if (string.IsNullOrEmpty(response))
-                        {
+                    }
+                    
+                    if (string.IsNullOrEmpty(response))
+                    {
                             // Validate that ID is greater than 0-0
                             if (millisTime == 0 && seqNum == 0)
                             {
