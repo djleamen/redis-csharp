@@ -45,7 +45,7 @@ async Task HandleClient(Socket client)
                 continue;
             
             string command = parts[0].ToUpper();
-            string response;
+            string response = string.Empty;
             
             // PING and ECHO
             if (command == "PING")
@@ -117,6 +117,7 @@ async Task HandleClient(Socket client)
                 string key = parts[1];
                 // Get all elements to append (from index 2 onwards)
                 var elements = parts.Skip(2).ToArray();
+                bool shouldUnblock = false;
                 
                 if (!dataStore.ContainsKey(key))
                 {
@@ -124,6 +125,7 @@ async Task HandleClient(Socket client)
                     var list = new List<string>(elements);
                     dataStore[key] = new StoredValue(list);
                     response = $":{list.Count}\r\n";
+                    shouldUnblock = true;
                 }
                 else
                 {
@@ -132,6 +134,7 @@ async Task HandleClient(Socket client)
                         storedValue.List.AddRange(elements);
                         int count = storedValue.List.Count;
                         response = $":{count}\r\n";
+                        shouldUnblock = true;
                     }
                     else
                     {
@@ -139,20 +142,33 @@ async Task HandleClient(Socket client)
                     }
                 }
                 
-                // Check if there are blocked clients waiting for this key
-                UnblockWaitingClients(key);
+                // Send response first
+                if (!string.IsNullOrEmpty(response))
+                {
+                    byte[] responseBytes = Encoding.UTF8.GetBytes(response);
+                    client.Send(responseBytes);
+                    response = string.Empty; // Mark as sent
+                }
+                
+                // Then check if there are blocked clients waiting for this key
+                if (shouldUnblock)
+                {
+                    UnblockWaitingClients(key);
+                }
             }
             // LPUSH - Prepend elements to a list
             else if (command == "LPUSH" && parts.Length >= 3)
             {
                 string key = parts[1];
                 var elements = parts.Skip(2).ToArray();
+                bool shouldUnblock = false;
                 
                 if (!dataStore.ContainsKey(key))
                 {
                     var list = new List<string>(elements.Reverse());
                     dataStore[key] = new StoredValue(list);
                     response = $":{list.Count}\r\n";
+                    shouldUnblock = true;
                 }
                 else
                 {
@@ -164,6 +180,7 @@ async Task HandleClient(Socket client)
                         }
                         int count = storedValue.List.Count;
                         response = $":{count}\r\n";
+                        shouldUnblock = true;
                     }
                     else
                     {
@@ -171,8 +188,19 @@ async Task HandleClient(Socket client)
                     }
                 }
                 
-                // Check if there are blocked clients waiting for this key
-                UnblockWaitingClients(key);
+                // Send response first
+                if (!string.IsNullOrEmpty(response))
+                {
+                    byte[] responseBytes = Encoding.UTF8.GetBytes(response);
+                    client.Send(responseBytes);
+                    response = string.Empty; // Mark as sent
+                }
+                
+                // Then check if there are blocked clients waiting for this key
+                if (shouldUnblock)
+                {
+                    UnblockWaitingClients(key);
+                }
             }
             // LRANGE - Retrieve elements from a list by range
             else if (command == "LRANGE" && parts.Length >= 4)
@@ -373,8 +401,12 @@ async Task HandleClient(Socket client)
                 response = "-ERR unknown command\r\n";
             }
             
-            byte[] responseBytes = Encoding.UTF8.GetBytes(response);
-            client.Send(responseBytes);
+            // Send response if we have one
+            if (!string.IsNullOrEmpty(response))
+            {
+                byte[] responseBytes = Encoding.UTF8.GetBytes(response);
+                client.Send(responseBytes);
+            }
         }
         catch
         {
