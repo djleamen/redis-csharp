@@ -377,8 +377,63 @@ async Task HandleClient(Socket client)
                         blockedClients[key].Enqueue(new BlockedClient(key, tcs));
                     }
                     
-                    // Wait for element to become available
-                    string? poppedElement = await tcs.Task;
+                    // Wait for element to become available or timeout
+                    Task<string?> elementTask = tcs.Task;
+                    Task completedTask;
+                    
+                    if (timeout > 0)
+                    {
+                        // Wait with timeout
+                        int timeoutMs = (int)(timeout * 1000);
+                        Task delayTask = Task.Delay(timeoutMs);
+                        completedTask = await Task.WhenAny(elementTask, delayTask);
+                    }
+                    else
+                    {
+                        // Wait indefinitely (timeout = 0)
+                        await elementTask;
+                        completedTask = elementTask;
+                    }
+                    
+                    string? poppedElement = null;
+                    
+                    if (completedTask == elementTask && elementTask.IsCompletedSuccessfully)
+                    {
+                        // Element became available
+                        poppedElement = elementTask.Result;
+                    }
+                    else
+                    {
+                        // Timeout reached - need to remove this client from the blocked queue
+                        lock (blockedClientsLock)
+                        {
+                            if (blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue))
+                            {
+                                // Remove this client from the queue if it's still there
+                                var tempQueue = new Queue<BlockedClient>();
+                                while (queue.Count > 0)
+                                {
+                                    var bc = queue.Dequeue();
+                                    if (bc.TaskCompletionSource != tcs)
+                                    {
+                                        tempQueue.Enqueue(bc);
+                                    }
+                                }
+                                
+                                if (tempQueue.Count > 0)
+                                {
+                                    blockedClients[key] = tempQueue;
+                                }
+                                else
+                                {
+                                    blockedClients.TryRemove(key, out _);
+                                }
+                            }
+                        }
+                        
+                        // Set the TCS to cancelled state if not already completed
+                        tcs.TrySetResult(null);
+                    }
                     
                     if (poppedElement != null)
                     {
