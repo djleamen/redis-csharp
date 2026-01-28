@@ -389,9 +389,10 @@ void UnblockWaitingClients(string key)
 {
     lock (blockedClientsLock)
     {
-        if (blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue) && queue.Count > 0)
+        // Keep unblocking clients while there are both blocked clients and elements
+        while (blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue) && queue.Count > 0)
         {
-            // Pop an element from the list and give it to the oldest blocked client
+            // Check if there are elements in the list
             if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null && storedValue.List.Count > 0)
             {
                 var blockedClient = queue.Dequeue();
@@ -406,6 +407,11 @@ void UnblockWaitingClients(string key)
                 {
                     blockedClients.TryRemove(key, out _);
                 }
+            }
+            else
+            {
+                // No more elements, stop unblocking
+                break;
             }
         }
     }
