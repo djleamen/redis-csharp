@@ -451,6 +451,41 @@ async Task HandleClient(Socket client)
                     }
                 }
             }
+            // TYPE - Get the type of value stored at a key
+            else if (command == "TYPE" && parts.Length >= 2)
+            {
+                string key = parts[1];
+                
+                if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    // Key doesn't exist
+                    response = "+none\r\n";
+                }
+                else if (storedValue.Value != null)
+                {
+                    // Check if expired
+                    if (storedValue.ExpiryMs.HasValue && 
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > storedValue.ExpiryMs.Value)
+                    {
+                        // Key expired, treat as non-existent
+                        dataStore.TryRemove(key, out _);
+                        response = "+none\r\n";
+                    }
+                    else
+                    {
+                        response = "+string\r\n";
+                    }
+                }
+                else if (storedValue.List != null)
+                {
+                    response = "+list\r\n";
+                }
+                else
+                {
+                    // Unknown type
+                    response = "+none\r\n";
+                }
+            }
             else
             {
                 response = "-ERR unknown command\r\n";
