@@ -480,10 +480,58 @@ async Task HandleClient(Socket client)
                 {
                     response = "+list\r\n";
                 }
+                else if (storedValue.Stream != null)
+                {
+                    response = "+stream\r\n";
+                }
                 else
                 {
                     // Unknown type
                     response = "+none\r\n";
+                }
+            }
+            // XADD - Add entry to a stream
+            else if (command == "XADD" && parts.Length >= 4)
+            {
+                string key = parts[1];
+                string entryId = parts[2];
+                
+                // Parse key-value pairs (must be even number of arguments after entry ID)
+                int fieldCount = parts.Length - 3;
+                if (fieldCount % 2 != 0)
+                {
+                    response = "-ERR wrong number of arguments for XADD\r\n";
+                }
+                else
+                {
+                    var fields = new Dictionary<string, string>();
+                    for (int i = 3; i < parts.Length; i += 2)
+                    {
+                        fields[parts[i]] = parts[i + 1];
+                    }
+                    
+                    var entry = new StreamEntry(entryId, fields);
+                    
+                    if (!dataStore.ContainsKey(key))
+                    {
+                        // Create new stream
+                        var stream = new List<StreamEntry> { entry };
+                        dataStore[key] = new StoredValue(stream);
+                        response = $"${entryId.Length}\r\n{entryId}\r\n";
+                    }
+                    else
+                    {
+                        if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.Stream != null)
+                        {
+                            // Append to existing stream
+                            storedValue.Stream.Add(entry);
+                            response = $"${entryId.Length}\r\n{entryId}\r\n";
+                        }
+                        else
+                        {
+                            response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                        }
+                    }
                 }
             }
             else
@@ -572,11 +620,15 @@ string[] ParseRespArray(string input)
 // Blocked client waiting for list element
 record BlockedClient(string Key, TaskCompletionSource<string?> TaskCompletionSource);
 
+// Stream entry with ID and key-value pairs
+record StreamEntry(string Id, Dictionary<string, string> Fields);
+
 // Store value and expiry time
 record StoredValue
 {
     public string? Value { get; init; }
     public List<string>? List { get; init; }
+    public List<StreamEntry>? Stream { get; init; }
     public long? ExpiryMs { get; init; }
     
     public StoredValue(string value, long? expiryMs = null)
@@ -588,6 +640,12 @@ record StoredValue
     public StoredValue(List<string> list, long? expiryMs = null)
     {
         List = list;
+        ExpiryMs = expiryMs;
+    }
+    
+    public StoredValue(List<StreamEntry> stream, long? expiryMs = null)
+    {
+        Stream = stream;
         ExpiryMs = expiryMs;
     }
 }
