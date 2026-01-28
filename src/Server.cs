@@ -605,68 +605,67 @@ async Task HandleClient(Socket client)
                     
                     if (string.IsNullOrEmpty(response))
                     {
-                            // Validate that ID is greater than 0-0
-                            if (millisTime == 0 && seqNum == 0)
+                        // Validate that ID is greater than 0-0
+                        if (millisTime == 0 && seqNum == 0)
+                        {
+                            response = "-ERR The ID specified in XADD must be greater than 0-0\r\n";
+                        }
+                        else
+                        {
+                            // Check if we need to validate against existing stream
+                            bool isValid = true;
+                            if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.Stream != null && storedValue.Stream.Count > 0)
                             {
-                                response = "-ERR The ID specified in XADD must be greater than 0-0\r\n";
-                            }
-                            else
-                            {
-                                // Check if we need to validate against existing stream
-                                bool isValid = true;
-                                if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.Stream != null && storedValue.Stream.Count > 0)
+                                // Get the last entry
+                                var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
+                                string[] lastIdParts = lastEntry.Id.Split('-');
+                                long lastMillisTime = long.Parse(lastIdParts[0]);
+                                long lastSeqNum = long.Parse(lastIdParts[1]);
+                                
+                                // New ID must be strictly greater than last ID
+                                if (millisTime < lastMillisTime)
                                 {
-                                    // Get the last entry
-                                    var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
-                                    string[] lastIdParts = lastEntry.Id.Split('-');
-                                    long lastMillisTime = long.Parse(lastIdParts[0]);
-                                    long lastSeqNum = long.Parse(lastIdParts[1]);
-                                    
-                                    // New ID must be strictly greater than last ID
-                                    if (millisTime < lastMillisTime)
-                                    {
-                                        isValid = false;
-                                    }
-                                    else if (millisTime == lastMillisTime && seqNum <= lastSeqNum)
-                                    {
-                                        isValid = false;
-                                    }
-                                    
-                                    if (!isValid)
-                                    {
-                                        response = "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n";
-                                    }
+                                    isValid = false;
+                                }
+                                else if (millisTime == lastMillisTime && seqNum <= lastSeqNum)
+                                {
+                                    isValid = false;
                                 }
                                 
-                                if (isValid)
+                                if (!isValid)
                                 {
-                                    var fields = new Dictionary<string, string>();
-                                    for (int i = 3; i < parts.Length; i += 2)
+                                    response = "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n";
+                                }
+                            }
+                            
+                            if (isValid)
+                            {
+                                var fields = new Dictionary<string, string>();
+                                for (int i = 3; i < parts.Length; i += 2)
+                                {
+                                    fields[parts[i]] = parts[i + 1];
+                                }
+                                
+                                var entry = new StreamEntry(entryId, fields);
+                                
+                                if (!dataStore.ContainsKey(key))
+                                {
+                                    // Create new stream
+                                    var stream = new List<StreamEntry> { entry };
+                                    dataStore[key] = new StoredValue(stream);
+                                    response = $"${entryId.Length}\r\n{entryId}\r\n";
+                                }
+                                else
+                                {
+                                    if (dataStore.TryGetValue(key, out StoredValue? existingValue) && existingValue.Stream != null)
                                     {
-                                        fields[parts[i]] = parts[i + 1];
-                                    }
-                                    
-                                    var entry = new StreamEntry(entryId, fields);
-                                    
-                                    if (!dataStore.ContainsKey(key))
-                                    {
-                                        // Create new stream
-                                        var stream = new List<StreamEntry> { entry };
-                                        dataStore[key] = new StoredValue(stream);
+                                        // Append to existing stream
+                                        existingValue.Stream.Add(entry);
                                         response = $"${entryId.Length}\r\n{entryId}\r\n";
                                     }
                                     else
                                     {
-                                        if (dataStore.TryGetValue(key, out StoredValue? existingValue) && existingValue.Stream != null)
-                                        {
-                                            // Append to existing stream
-                                            existingValue.Stream.Add(entry);
-                                            response = $"${entryId.Length}\r\n{entryId}\r\n";
-                                        }
-                                        else
-                                        {
-                                            response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-                                        }
+                                        response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                                     }
                                 }
                             }
