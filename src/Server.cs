@@ -11,6 +11,10 @@ using System.Text;
 // Thread-safe data store
 var dataStore = new ConcurrentDictionary<string, StoredValue>();
 
+// Track blocked clients per key
+var blockedClients = new ConcurrentDictionary<string, Queue<BlockedClient>>();
+var blockedClientsLock = new object();
+
 TcpListener server = new TcpListener(IPAddress.Any, 6379);
 server.Start();
 
@@ -20,7 +24,7 @@ while (true)
     Task.Run(() => HandleClient(client));
 }
 
-void HandleClient(Socket client)
+async Task HandleClient(Socket client)
 {
     while (true)
     {
@@ -134,6 +138,9 @@ void HandleClient(Socket client)
                         response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                     }
                 }
+                
+                // Check if there are blocked clients waiting for this key
+                UnblockWaitingClients(key);
             }
             // LPUSH - Prepend elements to a list
             else if (command == "LPUSH" && parts.Length >= 3)
@@ -163,6 +170,9 @@ void HandleClient(Socket client)
                         response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                     }
                 }
+                
+                // Check if there are blocked clients waiting for this key
+                UnblockWaitingClients(key);
             }
             // LRANGE - Retrieve elements from a list by range
             else if (command == "LRANGE" && parts.Length >= 4)
@@ -303,6 +313,61 @@ void HandleClient(Socket client)
                 
                 SendResponse:;
             }
+            // BLPOP - Blocking pop from list
+            else if (command == "BLPOP" && parts.Length >= 3)
+            {
+                string key = parts[1];
+                
+                if (!double.TryParse(parts[2], out double timeout))
+                {
+                    response = "-ERR timeout is not a float or out of range\r\n";
+                }
+                else if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null && storedValue.List.Count > 0)
+                {
+                    // List has elements, pop immediately
+                    string element = storedValue.List[0];
+                    storedValue.List.RemoveAt(0);
+                    
+                    // Return array: [key, element]
+                    var sb = new StringBuilder();
+                    sb.Append("*2\r\n");
+                    sb.Append($"${key.Length}\r\n{key}\r\n");
+                    sb.Append($"${element.Length}\r\n{element}\r\n");
+                    response = sb.ToString();
+                }
+                else
+                {
+                    // List is empty or doesn't exist, block
+                    var tcs = new TaskCompletionSource<string?>();
+                    
+                    lock (blockedClientsLock)
+                    {
+                        if (!blockedClients.ContainsKey(key))
+                        {
+                            blockedClients[key] = new Queue<BlockedClient>();
+                        }
+                        blockedClients[key].Enqueue(new BlockedClient(key, tcs));
+                    }
+                    
+                    // Wait for element to become available
+                    string? poppedElement = await tcs.Task;
+                    
+                    if (poppedElement != null)
+                    {
+                        // Return array: [key, element]
+                        var sb = new StringBuilder();
+                        sb.Append("*2\r\n");
+                        sb.Append($"${key.Length}\r\n{key}\r\n");
+                        sb.Append($"${poppedElement.Length}\r\n{poppedElement}\r\n");
+                        response = sb.ToString();
+                    }
+                    else
+                    {
+                        // Timeout reached
+                        response = "*-1\r\n";
+                    }
+                }
+            }
             else
             {
                 response = "-ERR unknown command\r\n";
@@ -318,6 +383,32 @@ void HandleClient(Socket client)
     }
     
     client.Close();
+}
+
+void UnblockWaitingClients(string key)
+{
+    lock (blockedClientsLock)
+    {
+        if (blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue) && queue.Count > 0)
+        {
+            // Pop an element from the list and give it to the oldest blocked client
+            if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null && storedValue.List.Count > 0)
+            {
+                var blockedClient = queue.Dequeue();
+                string element = storedValue.List[0];
+                storedValue.List.RemoveAt(0);
+                
+                // Unblock the client by completing the TaskCompletionSource
+                blockedClient.TaskCompletionSource.SetResult(element);
+                
+                // Clean up empty queue
+                if (queue.Count == 0)
+                {
+                    blockedClients.TryRemove(key, out _);
+                }
+            }
+        }
+    }
 }
 
 // Simple RESP array parser
@@ -349,6 +440,9 @@ string[] ParseRespArray(string input)
     
     return parts.ToArray();
 }
+
+// Blocked client waiting for list element
+record BlockedClient(string Key, TaskCompletionSource<string?> TaskCompletionSource);
 
 // Store value and expiry time
 record StoredValue
