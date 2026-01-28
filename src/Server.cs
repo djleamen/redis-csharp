@@ -235,8 +235,35 @@ void HandleClient(Socket client)
                 }
                 else
                 {
-                    // Return the list length
                     response = $":{storedValue.List.Count}\r\n";
+                }
+            }
+            // LPOP - Remove and return the first element of a list
+            else if (command == "LPOP" && parts.Length >= 2)
+            {
+                string key = parts[1];
+                
+                if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    // Key doesn't exist, return null
+                    response = "$-1\r\n";
+                }
+                else if (storedValue.List == null)
+                {
+                    // Key exists but is not a list
+                    response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                }
+                else if (storedValue.List.Count == 0)
+                {
+                    // List is empty
+                    response = "$-1\r\n";
+                }
+                else
+                {
+                    // Remove and return first element
+                    string element = storedValue.List[0];
+                    storedValue.List.RemoveAt(0);
+                    response = $"${element.Length}\r\n{element}\r\n";
                 }
             }
             else
