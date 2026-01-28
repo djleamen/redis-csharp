@@ -504,8 +504,8 @@ async Task HandleClient(Socket client)
                 }
                 else
                 {
-                    long millisTime;
-                    long seqNum;
+                    long millisTime = 0;
+                    long seqNum = 0;
                     
                     // Check if entire ID is auto-generated (*)
                     if (entryId == "*")
