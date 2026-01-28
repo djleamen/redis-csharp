@@ -238,10 +238,21 @@ void HandleClient(Socket client)
                     response = $":{storedValue.List.Count}\r\n";
                 }
             }
-            // LPOP - Remove and return the first element of a list
+            // LPOP - Remove and return the first element(s) of a list
             else if (command == "LPOP" && parts.Length >= 2)
             {
                 string key = parts[1];
+                int count = 1; // Default to 1 element
+                
+                // Check if count parameter is provided
+                if (parts.Length >= 3)
+                {
+                    if (!int.TryParse(parts[2], out count) || count < 1)
+                    {
+                        response = "-ERR value is not an integer or out of range\r\n";
+                        goto SendResponse;
+                    }
+                }
                 
                 if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
                 {
@@ -260,11 +271,37 @@ void HandleClient(Socket client)
                 }
                 else
                 {
-                    // Remove and return first element
-                    string element = storedValue.List[0];
-                    storedValue.List.RemoveAt(0);
-                    response = $"${element.Length}\r\n{element}\r\n";
+                    // Determine how many elements to remove
+                    int elementsToRemove = Math.Min(count, storedValue.List.Count);
+                    
+                    if (parts.Length >= 3)
+                    {
+                        // Return multiple elements as RESP array
+                        var removedElements = new List<string>();
+                        for (int i = 0; i < elementsToRemove; i++)
+                        {
+                            removedElements.Add(storedValue.List[0]);
+                            storedValue.List.RemoveAt(0);
+                        }
+                        
+                        var sb = new StringBuilder();
+                        sb.Append($"*{removedElements.Count}\r\n");
+                        foreach (var element in removedElements)
+                        {
+                            sb.Append($"${element.Length}\r\n{element}\r\n");
+                        }
+                        response = sb.ToString();
+                    }
+                    else
+                    {
+                        // Return single element as bulk string
+                        string element = storedValue.List[0];
+                        storedValue.List.RemoveAt(0);
+                        response = $"${element.Length}\r\n{element}\r\n";
+                    }
                 }
+                
+                SendResponse:;
             }
             else
             {
