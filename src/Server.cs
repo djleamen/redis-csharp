@@ -848,16 +848,19 @@ async Task HandleClient(Socket client)
                             if (completedTask == entriesTask && entriesTask.IsCompletedSuccessfully && entriesTask.Result != null)
                             {
                                 // Got entries, use them
+                                Console.WriteLine($"[DEBUG] Got results from unblock: {entriesTask.Result.Count} stream(s)");
                                 streamResults = entriesTask.Result;
                             }
                             else
                             {
                                 // Timeout - return null array
+                                Console.WriteLine($"[DEBUG] Timeout reached or task not completed successfully");
                                 response = "*-1\r\n";
                             }
                         }
                         
                         // Build response if we have results and no response set yet
+                        Console.WriteLine($"[DEBUG] Building response: response isEmpty={string.IsNullOrEmpty(response)}, streamResults.Count={streamResults.Count}");
                         if (string.IsNullOrEmpty(response))
                         {
                             if (streamResults.Count == 0)
@@ -1163,7 +1166,12 @@ void UnblockWaitingStreamReaders(string key)
                 
                 if (results.Count > 0)
                 {
+                    Console.WriteLine($"[DEBUG] Unblocking reader with {results.Count} stream(s) containing entries");
                     reader.TaskCompletionSource.TrySetResult(results);
+                }
+                else
+                {
+                    Console.WriteLine($"[DEBUG] No results found for blocked reader, not unblocking");
                 }
             }
         }
