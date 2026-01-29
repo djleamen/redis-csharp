@@ -808,6 +808,12 @@ void UnblockWaitingClients(string key)
 // Helper function to parse stream ID with optional sequence number
 (long, long) ParseStreamId(string id, bool isStart)
 {
+    // Handle special case for '-' (beginning or end of stream)
+    if (id == "-")
+    {
+        return isStart ? (0, 0) : (long.MaxValue, long.MaxValue);
+    }
+    
     string[] parts = id.Split('-');
     long millis = long.Parse(parts[0]);
     long seq;
