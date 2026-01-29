@@ -15,6 +15,10 @@ var dataStore = new ConcurrentDictionary<string, StoredValue>();
 var blockedClients = new ConcurrentDictionary<string, Queue<BlockedClient>>();
 var blockedClientsLock = new object();
 
+// Track blocked stream readers per key
+var blockedStreamReaders = new ConcurrentDictionary<string, Queue<BlockedStreamReader>>();
+var blockedStreamReadersLock = new object();
+
 TcpListener server = new TcpListener(IPAddress.Any, 6379);
 server.Start();
 
@@ -668,6 +672,9 @@ async Task HandleClient(Socket client)
                                         response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                                     }
                                 }
+                                
+                                // Unblock waiting stream readers
+                                UnblockWaitingStreamReaders(key);
                             }
                         }
                     }
@@ -676,12 +683,31 @@ async Task HandleClient(Socket client)
             // XREAD - Read data from streams starting from a specified ID (exclusive)
             else if (command == "XREAD" && parts.Length >= 4)
             {
-                // Expected format: XREAD STREAMS <key1> <key2> ... <id1> <id2> ...
-                if (parts[1].ToUpper() != "STREAMS")
+                // Expected format: XREAD [BLOCK <milliseconds>] STREAMS <key1> <key2> ... <id1> <id2> ...
+                int blockTimeout = -1;
+                int streamsIndex = 1;
+                
+                // Check for BLOCK option
+                if (parts[1].ToUpper() == "BLOCK")
+                {
+                    if (parts.Length < 6)
+                    {
+                        response = "-ERR wrong number of arguments for XREAD\r\n";
+                        goto SkipXRead;
+                    }
+                    if (!int.TryParse(parts[2], out blockTimeout))
+                    {
+                        response = "-ERR timeout is not an integer or out of range\r\n";
+                        goto SkipXRead;
+                    }
+                    streamsIndex = 3;
+                }
+                
+                if (parts[streamsIndex].ToUpper() != "STREAMS")
                 {
                     response = "-ERR wrong number of arguments for XREAD\r\n";
                 }
-                else if (parts.Length < 4)
+                else if (parts.Length < streamsIndex + 3)
                 {
                     response = "-ERR wrong number of arguments for XREAD\r\n";
                 }
@@ -689,7 +715,7 @@ async Task HandleClient(Socket client)
                 {
                     // Calculate number of streams
                     // After "STREAMS", we have N keys followed by N IDs
-                    int argsAfterStreams = parts.Length - 2; // Skip XREAD and STREAMS
+                    int argsAfterStreams = parts.Length - streamsIndex - 1; // Skip to after STREAMS
                     if (argsAfterStreams % 2 != 0)
                     {
                         response = "-ERR wrong number of arguments for XREAD\r\n";
@@ -703,8 +729,8 @@ async Task HandleClient(Socket client)
                         // Parse keys and IDs
                         for (int i = 0; i < streamCount; i++)
                         {
-                            keys[i] = parts[2 + i];
-                            ids[i] = parts[2 + streamCount + i];
+                            keys[i] = parts[streamsIndex + 1 + i];
+                            ids[i] = parts[streamsIndex + 1 + streamCount + i];
                         }
                         
                         // Query each stream and collect results
@@ -754,12 +780,89 @@ async Task HandleClient(Socket client)
                         }
                         
                         // Build RESP response
-                        if (streamResults.Count == 0)
+                        if (streamResults.Count == 0 && blockTimeout >= 0)
                         {
-                            // No matching entries in any stream, return null array
+                            // No entries available and blocking is enabled
+                            var tcs = new TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?>();
+                            
+                            // Register this client as blocked for all requested streams
+                            lock (blockedStreamReadersLock)
+                            {
+                                for (int i = 0; i < streamCount; i++)
+                                {
+                                    string key = keys[i];
+                                    if (!blockedStreamReaders.ContainsKey(key))
+                                    {
+                                        blockedStreamReaders[key] = new Queue<BlockedStreamReader>();
+                                    }
+                                    blockedStreamReaders[key].Enqueue(new BlockedStreamReader(keys, ids, tcs));
+                                }
+                            }
+                            
+                            // Wait for entries or timeout
+                            Task<List<(string key, List<StreamEntry> entries)>?> entriesTask = tcs.Task;
+                            Task completedTask;
+                            
+                            if (blockTimeout > 0)
+                            {
+                                Task delayTask = Task.Delay(blockTimeout);
+                                completedTask = await Task.WhenAny(entriesTask, delayTask);
+                            }
+                            else
+                            {
+                                // Block indefinitely
+                                await entriesTask;
+                                completedTask = entriesTask;
+                            }
+                            
+                            // Clean up - remove this client from blocked queues if still there
+                            lock (blockedStreamReadersLock)
+                            {
+                                for (int i = 0; i < streamCount; i++)
+                                {
+                                    string key = keys[i];
+                                    if (blockedStreamReaders.TryGetValue(key, out Queue<BlockedStreamReader>? queue))
+                                    {
+                                        var tempQueue = new Queue<BlockedStreamReader>();
+                                        while (queue.Count > 0)
+                                        {
+                                            var reader = queue.Dequeue();
+                                            if (reader.TaskCompletionSource != tcs)
+                                            {
+                                                tempQueue.Enqueue(reader);
+                                            }
+                                        }
+                                        
+                                        if (tempQueue.Count > 0)
+                                        {
+                                            blockedStreamReaders[key] = tempQueue;
+                                        }
+                                        else
+                                        {
+                                            blockedStreamReaders.TryRemove(key, out _);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if (completedTask == entriesTask && entriesTask.IsCompletedSuccessfully && entriesTask.Result != null)
+                            {
+                                // Got entries, use them
+                                streamResults = entriesTask.Result;
+                            }
+                            else
+                            {
+                                // Timeout - return null array
+                                response = "*-1\r\n";
+                            }
+                        }
+                        
+                        if (streamResults.Count == 0 && blockTimeout < 0)
+                        {
+                            // No matching entries in any stream, return null array (non-blocking)
                             response = "*-1\r\n";
                         }
-                        else
+                        else if (streamResults.Count > 0)
                         {
                             var sb = new StringBuilder();
                             
@@ -798,6 +901,8 @@ async Task HandleClient(Socket client)
                         }
                     }
                 }
+                
+                SkipXRead:;
             }
             // XRANGE - Query range of entries from stream
             else if (command == "XRANGE" && parts.Length >= 4)
@@ -993,8 +1098,79 @@ string[] ParseRespArray(string input)
     return parts.ToArray();
 }
 
+void UnblockWaitingStreamReaders(string key)
+{
+    lock (blockedStreamReadersLock)
+    {
+        if (blockedStreamReaders.TryGetValue(key, out Queue<BlockedStreamReader>? queue) && queue.Count > 0)
+        {
+            // Process all blocked readers for this key
+            var readersToUnblock = new List<BlockedStreamReader>();
+            while (queue.Count > 0)
+            {
+                readersToUnblock.Add(queue.Dequeue());
+            }
+            blockedStreamReaders.TryRemove(key, out _);
+            
+            // Unblock each reader
+            foreach (var reader in readersToUnblock)
+            {
+                // Query all streams for this reader
+                var results = new List<(string key, List<StreamEntry> entries)>();
+                
+                for (int i = 0; i < reader.Keys.Length; i++)
+                {
+                    string streamKey = reader.Keys[i];
+                    string startId = reader.Ids[i];
+                    
+                    if (dataStore.TryGetValue(streamKey, out StoredValue? storedValue) && storedValue.Stream != null)
+                    {
+                        var (startMillis, startSeq) = ParseStreamId(startId, true);
+                        var matchingEntries = new List<StreamEntry>();
+                        
+                        foreach (var entry in storedValue.Stream)
+                        {
+                            string[] idParts = entry.Id.Split('-');
+                            long entryMillis = long.Parse(idParts[0]);
+                            long entrySeq = long.Parse(idParts[1]);
+                            
+                            bool isGreater = false;
+                            if (entryMillis > startMillis)
+                            {
+                                isGreater = true;
+                            }
+                            else if (entryMillis == startMillis && entrySeq > startSeq)
+                            {
+                                isGreater = true;
+                            }
+                            
+                            if (isGreater)
+                            {
+                                matchingEntries.Add(entry);
+                            }
+                        }
+                        
+                        if (matchingEntries.Count > 0)
+                        {
+                            results.Add((streamKey, matchingEntries));
+                        }
+                    }
+                }
+                
+                if (results.Count > 0)
+                {
+                    reader.TaskCompletionSource.TrySetResult(results);
+                }
+            }
+        }
+    }
+}
+
 // Blocked client waiting for list element
 record BlockedClient(string Key, TaskCompletionSource<string?> TaskCompletionSource);
+
+// Blocked stream reader waiting for new entries
+record BlockedStreamReader(string[] Keys, string[] Ids, TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?> TaskCompletionSource);
 
 // Stream entry with ID and key-value pairs
 record StreamEntry(string Id, Dictionary<string, string> Fields);
