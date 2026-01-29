@@ -857,12 +857,15 @@ async Task HandleClient(Socket client)
                             }
                         }
                         
-                        if (streamResults.Count == 0 && blockTimeout < 0)
+                        // Build response if we have results
+                        if (string.IsNullOrEmpty(response))
                         {
-                            // No matching entries in any stream, return null array (non-blocking)
-                            response = "*-1\r\n";
-                        }
-                        else if (streamResults.Count > 0)
+                            if (streamResults.Count == 0)
+                            {
+                                // No matching entries in any stream, return null array (non-blocking)
+                                response = "*-1\r\n";
+                            }
+                            else
                         {
                             var sb = new StringBuilder();
                             
