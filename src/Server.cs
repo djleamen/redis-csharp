@@ -845,16 +845,22 @@ async Task HandleClient(Socket client)
                                 }
                             }
                             
-                            if (completedTask == entriesTask && entriesTask.IsCompletedSuccessfully && entriesTask.Result != null)
+                            if (entriesTask.IsCompletedSuccessfully && entriesTask.Result != null)
                             {
                                 // Got entries, use them
                                 Console.WriteLine($"[DEBUG] Got results from unblock: {entriesTask.Result.Count} stream(s)");
                                 streamResults = entriesTask.Result;
                             }
+                            else if (completedTask == entriesTask)
+                            {
+                                // Task completed but not successfully (cancelled or faulted)
+                                Console.WriteLine($"[DEBUG] Task completed but not successfully");
+                                response = "*-1\r\n";
+                            }
                             else
                             {
                                 // Timeout - return null array
-                                Console.WriteLine($"[DEBUG] Timeout or error: completedTask==entriesTask:{completedTask == entriesTask}, IsCompletedSuccessfully:{entriesTask.IsCompletedSuccessfully}, Result!=null:{entriesTask.Result != null}");
+                                Console.WriteLine($"[DEBUG] Timeout reached");
                                 response = "*-1\r\n";
                             }
                         }
