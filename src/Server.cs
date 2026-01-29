@@ -857,12 +857,12 @@ async Task HandleClient(Socket client)
                             }
                         }
                         
-                        // Build response if we have results
-                        if (string.IsNullOrEmpty(response) && streamResults != null)
+                        // Build response if we have results and no response set yet
+                        if (string.IsNullOrEmpty(response))
                         {
                             if (streamResults.Count == 0)
                             {
-                                // No matching entries in any stream, return null array (non-blocking)
+                                // No matching entries in any stream
                                 response = "*-1\r\n";
                             }
                             else
@@ -902,11 +902,6 @@ async Task HandleClient(Socket client)
                                 
                                 response = sb.ToString();
                             }
-                        }
-                        else if (string.IsNullOrEmpty(response))
-                        {
-                            // Fallback - if we get here without a response, return null array
-                            response = "*-1\r\n";
                         }
                     }
                 }
