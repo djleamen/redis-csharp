@@ -731,6 +731,22 @@ async Task HandleClient(Socket client)
                         {
                             keys[i] = parts[streamsIndex + 1 + i];
                             ids[i] = parts[streamsIndex + 1 + streamCount + i];
+                            
+                            // Handle $ - replace with current maximum ID in stream
+                            if (ids[i] == "$")
+                            {
+                                if (dataStore.TryGetValue(keys[i], out StoredValue? storedValue) && storedValue.Stream != null && storedValue.Stream.Count > 0)
+                                {
+                                    // Get the last entry's ID (maximum ID currently in stream)
+                                    var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
+                                    ids[i] = lastEntry.Id;
+                                }
+                                else
+                                {
+                                    // Stream is empty or doesn't exist, use 0-0 so any new entries will be returned
+                                    ids[i] = "0-0";
+                                }
+                            }
                         }
                         
                         // Query each stream and collect results
