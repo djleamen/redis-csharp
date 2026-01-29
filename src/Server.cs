@@ -858,7 +858,7 @@ async Task HandleClient(Socket client)
                         }
                         
                         // Build response if we have results
-                        if (string.IsNullOrEmpty(response))
+                        if (string.IsNullOrEmpty(response) && streamResults != null)
                         {
                             if (streamResults.Count == 0)
                             {
@@ -902,6 +902,11 @@ async Task HandleClient(Socket client)
                                 
                                 response = sb.ToString();
                             }
+                        }
+                        else if (string.IsNullOrEmpty(response))
+                        {
+                            // Fallback - if we get here without a response, return null array
+                            response = "*-1\r\n";
                         }
                     }
                 }
