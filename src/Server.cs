@@ -866,41 +866,42 @@ async Task HandleClient(Socket client)
                                 response = "*-1\r\n";
                             }
                             else
-                        {
-                            var sb = new StringBuilder();
-                            
-                            // Return array of streams
-                            sb.Append($"*{streamResults.Count}\r\n");
-                            
-                            foreach (var (key, matchingEntries) in streamResults)
                             {
-                                // Stream entry (contains key and entries array)
-                                sb.Append("*2\r\n");
+                                var sb = new StringBuilder();
                                 
-                                // Stream key
-                                sb.Append($"${key.Length}\r\n{key}\r\n");
+                                // Return array of streams
+                                sb.Append($"*{streamResults.Count}\r\n");
                                 
-                                // Entries array
-                                sb.Append($"*{matchingEntries.Count}\r\n");
-                                
-                                foreach (var entry in matchingEntries)
+                                foreach (var (key, matchingEntries) in streamResults)
                                 {
+                                    // Stream entry (contains key and entries array)
                                     sb.Append("*2\r\n");
                                     
-                                    // Entry ID
-                                    sb.Append($"${entry.Id.Length}\r\n{entry.Id}\r\n");
+                                    // Stream key
+                                    sb.Append($"${key.Length}\r\n{key}\r\n");
                                     
-                                    // Fields array
-                                    sb.Append($"*{entry.Fields.Count * 2}\r\n");
-                                    foreach (var kvp in entry.Fields)
+                                    // Entries array
+                                    sb.Append($"*{matchingEntries.Count}\r\n");
+                                    
+                                    foreach (var entry in matchingEntries)
                                     {
-                                        sb.Append($"${kvp.Key.Length}\r\n{kvp.Key}\r\n");
-                                        sb.Append($"${kvp.Value.Length}\r\n{kvp.Value}\r\n");
+                                        sb.Append("*2\r\n");
+                                        
+                                        // Entry ID
+                                        sb.Append($"${entry.Id.Length}\r\n{entry.Id}\r\n");
+                                        
+                                        // Fields array
+                                        sb.Append($"*{entry.Fields.Count * 2}\r\n");
+                                        foreach (var kvp in entry.Fields)
+                                        {
+                                            sb.Append($"${kvp.Key.Length}\r\n{kvp.Key}\r\n");
+                                            sb.Append($"${kvp.Value.Length}\r\n{kvp.Value}\r\n");
+                                        }
                                     }
                                 }
+                                
+                                response = sb.ToString();
                             }
-                            
-                            response = sb.ToString();
                         }
                     }
                 }
