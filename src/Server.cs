@@ -814,6 +814,12 @@ void UnblockWaitingClients(string key)
         return isStart ? (0, 0) : (long.MaxValue, long.MaxValue);
     }
     
+    // Handle special case for '+' (end of stream)
+    if (id == "+")
+    {
+        return (long.MaxValue, long.MaxValue);
+    }
+    
     string[] parts = id.Split('-');
     long millis = long.Parse(parts[0]);
     long seq;
