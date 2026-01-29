@@ -783,7 +783,7 @@ async Task HandleClient(Socket client)
                         if (streamResults.Count == 0 && blockTimeout >= 0)
                         {
                             // No entries available and blocking is enabled
-                            var tcs = new TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?>();
+                            var tcs = new TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?>(TaskCreationOptions.RunContinuationsAsynchronously);
                             
                             // Register this client as blocked for all requested streams
                             lock (blockedStreamReadersLock)
