@@ -854,7 +854,7 @@ async Task HandleClient(Socket client)
                             else
                             {
                                 // Timeout - return null array
-                                Console.WriteLine($"[DEBUG] Timeout reached or task not completed successfully");
+                                Console.WriteLine($"[DEBUG] Timeout or error: completedTask==entriesTask:{completedTask == entriesTask}, IsCompletedSuccessfully:{entriesTask.IsCompletedSuccessfully}, Result!=null:{entriesTask.Result != null}");
                                 response = "*-1\r\n";
                             }
                         }
