@@ -848,36 +848,30 @@ async Task HandleClient(Socket client)
                             if (entriesTask.IsCompletedSuccessfully && entriesTask.Result != null)
                             {
                                 // Got entries, use them
-                                Console.WriteLine($"[DEBUG] Got results from unblock: {entriesTask.Result.Count} stream(s)");
                                 streamResults = entriesTask.Result;
                             }
                             else if (completedTask == entriesTask)
                             {
                                 // Task completed but not successfully (cancelled or faulted)
-                                Console.WriteLine($"[DEBUG] Task completed but not successfully");
                                 response = "*-1\r\n";
                             }
                             else
                             {
                                 // Timeout - return null array
-                                Console.WriteLine($"[DEBUG] Timeout reached");
                                 response = "*-1\r\n";
                             }
                         }
                         
                         // Build response if we have results and no response set yet
-                        Console.WriteLine($"[DEBUG] Building response: response isEmpty={string.IsNullOrEmpty(response)}, streamResults.Count={streamResults.Count}");
                         if (string.IsNullOrEmpty(response))
                         {
                             if (streamResults.Count == 0)
                             {
                                 // No matching entries in any stream
-                                Console.WriteLine($"[DEBUG] No matching entries, returning null array");
                                 response = "*-1\r\n";
                             }
                             else
                             {
-                                Console.WriteLine($"[DEBUG] Building RESP response for {streamResults.Count} stream(s)");
                                 var sb = new StringBuilder();
                                 
                                 // Return array of streams
@@ -912,12 +906,7 @@ async Task HandleClient(Socket client)
                                 }
                                 
                                 response = sb.ToString();
-                                Console.WriteLine($"[DEBUG] Built response, length={response.Length}");
                             }
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[DEBUG] Response already set, skipping build");
                         }
                     }
                 }
@@ -1009,16 +998,10 @@ async Task HandleClient(Socket client)
             }
             
             // Send response if we have one
-            Console.WriteLine($"[DEBUG] About to send response: isEmpty={string.IsNullOrEmpty(response)}, length={response?.Length ?? 0}");
             if (!string.IsNullOrEmpty(response))
             {
                 byte[] responseBytes = Encoding.UTF8.GetBytes(response);
                 client.Send(responseBytes);
-                Console.WriteLine($"[DEBUG] Sent {responseBytes.Length} bytes");
-            }
-            else
-            {
-                Console.WriteLine($"[DEBUG] No response to send");
             }
         }
         catch
@@ -1185,12 +1168,7 @@ void UnblockWaitingStreamReaders(string key)
                 
                 if (results.Count > 0)
                 {
-                    Console.WriteLine($"[DEBUG] Unblocking reader with {results.Count} stream(s) containing entries");
                     reader.TaskCompletionSource.TrySetResult(results);
-                }
-                else
-                {
-                    Console.WriteLine($"[DEBUG] No results found for blocked reader, not unblocking");
                 }
             }
         }
