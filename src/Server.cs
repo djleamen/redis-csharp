@@ -673,6 +673,106 @@ async Task HandleClient(Socket client)
                     }
                 }
             }
+            // XREAD - Read data from streams starting from a specified ID (exclusive)
+            else if (command == "XREAD" && parts.Length >= 4)
+            {
+                // Expected format: XREAD STREAMS <key> <id>
+                if (parts[1].ToUpper() != "STREAMS")
+                {
+                    response = "-ERR wrong number of arguments for XREAD\r\n";
+                }
+                else if (parts.Length < 4)
+                {
+                    response = "-ERR wrong number of arguments for XREAD\r\n";
+                }
+                else
+                {
+                    string key = parts[2];
+                    string startId = parts[3];
+                    
+                    if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                    {
+                        // Key doesn't exist, return null array
+                        response = "*-1\r\n";
+                    }
+                    else if (storedValue.Stream == null)
+                    {
+                        // Key exists but is not a stream
+                        response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                    }
+                    else
+                    {
+                        // Parse start ID
+                        var (startMillis, startSeq) = ParseStreamId(startId, true);
+                        
+                        // Filter entries with ID greater than start ID (exclusive)
+                        var matchingEntries = new List<StreamEntry>();
+                        foreach (var entry in storedValue.Stream)
+                        {
+                            string[] idParts = entry.Id.Split('-');
+                            long entryMillis = long.Parse(idParts[0]);
+                            long entrySeq = long.Parse(idParts[1]);
+                            
+                            // Check if entry ID is greater than start ID
+                            bool isGreater = false;
+                            if (entryMillis > startMillis)
+                            {
+                                isGreater = true;
+                            }
+                            else if (entryMillis == startMillis && entrySeq > startSeq)
+                            {
+                                isGreater = true;
+                            }
+                            
+                            if (isGreater)
+                            {
+                                matchingEntries.Add(entry);
+                            }
+                        }
+                        
+                        // Build RESP response
+                        var sb = new StringBuilder();
+                        
+                        if (matchingEntries.Count == 0)
+                        {
+                            // No matching entries, return null array
+                            response = "*-1\r\n";
+                        }
+                        else
+                        {
+                            // Return array of streams (we only have 1 stream)
+                            sb.Append("*1\r\n");
+                            
+                            // Stream entry (contains key and entries array)
+                            sb.Append("*2\r\n");
+                            
+                            // Stream key
+                            sb.Append($"${key.Length}\r\n{key}\r\n");
+                            
+                            // Entries array
+                            sb.Append($"*{matchingEntries.Count}\r\n");
+                            
+                            foreach (var entry in matchingEntries)
+                            {
+                                sb.Append("*2\r\n");
+                                
+                                // Entry ID
+                                sb.Append($"${entry.Id.Length}\r\n{entry.Id}\r\n");
+                                
+                                // Fields array
+                                sb.Append($"*{entry.Fields.Count * 2}\r\n");
+                                foreach (var kvp in entry.Fields)
+                                {
+                                    sb.Append($"${kvp.Key.Length}\r\n{kvp.Key}\r\n");
+                                    sb.Append($"${kvp.Value.Length}\r\n{kvp.Value}\r\n");
+                                }
+                            }
+                            
+                            response = sb.ToString();
+                        }
+                    }
+                }
+            }
             // XRANGE - Query range of entries from stream
             else if (command == "XRANGE" && parts.Length >= 4)
             {
