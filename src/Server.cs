@@ -673,6 +673,85 @@ async Task HandleClient(Socket client)
                     }
                 }
             }
+            // XRANGE - Query range of entries from stream
+            else if (command == "XRANGE" && parts.Length >= 4)
+            {
+                string key = parts[1];
+                string startId = parts[2];
+                string endId = parts[3];
+                
+                if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    // Key doesn't exist, return empty array
+                    response = "*0\r\n";
+                }
+                else if (storedValue.Stream == null)
+                {
+                    // Key exists but is not a stream
+                    response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                }
+                else
+                {
+                    // Parse start and end IDs
+                    var (startMillis, startSeq) = ParseStreamId(startId, true);
+                    var (endMillis, endSeq) = ParseStreamId(endId, false);
+                    
+                    // Filter entries within range
+                    var matchingEntries = new List<StreamEntry>();
+                    foreach (var entry in storedValue.Stream)
+                    {
+                        string[] idParts = entry.Id.Split('-');
+                        long entryMillis = long.Parse(idParts[0]);
+                        long entrySeq = long.Parse(idParts[1]);
+                        
+                        // Check if entry is within range (inclusive)
+                        bool isInRange = false;
+                        if (entryMillis > startMillis && entryMillis < endMillis)
+                        {
+                            isInRange = true;
+                        }
+                        else if (entryMillis == startMillis && entryMillis == endMillis)
+                        {
+                            isInRange = entrySeq >= startSeq && entrySeq <= endSeq;
+                        }
+                        else if (entryMillis == startMillis)
+                        {
+                            isInRange = entrySeq >= startSeq;
+                        }
+                        else if (entryMillis == endMillis)
+                        {
+                            isInRange = entrySeq <= endSeq;
+                        }
+                        
+                        if (isInRange)
+                        {
+                            matchingEntries.Add(entry);
+                        }
+                    }
+                    
+                    // Build RESP response
+                    var sb = new StringBuilder();
+                    sb.Append($"*{matchingEntries.Count}\r\n");
+                    
+                    foreach (var entry in matchingEntries)
+                    {
+                        sb.Append("*2\r\n");
+                        
+                        // Entry ID
+                        sb.Append($"${entry.Id.Length}\r\n{entry.Id}\r\n");
+                        
+                        // Fields array
+                        sb.Append($"*{entry.Fields.Count * 2}\r\n");
+                        foreach (var kvp in entry.Fields)
+                        {
+                            sb.Append($"${kvp.Key.Length}\r\n{kvp.Key}\r\n");
+                            sb.Append($"${kvp.Value.Length}\r\n{kvp.Value}\r\n");
+                        }
+                    }
+                    
+                    response = sb.ToString();
+                }
+            }
             else
             {
                 response = "-ERR unknown command\r\n";
@@ -724,6 +803,26 @@ void UnblockWaitingClients(string key)
             }
         }
     }
+}
+
+// Helper function to parse stream ID with optional sequence number
+(long, long) ParseStreamId(string id, bool isStart)
+{
+    string[] parts = id.Split('-');
+    long millis = long.Parse(parts[0]);
+    long seq;
+    
+    if (parts.Length == 1)
+    {
+        // No sequence number provided
+        seq = isStart ? 0 : long.MaxValue;
+    }
+    else
+    {
+        seq = long.Parse(parts[1]);
+    }
+    
+    return (millis, seq);
 }
 
 // Simple RESP array parser
