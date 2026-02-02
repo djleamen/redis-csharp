@@ -90,9 +90,13 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
                 dataStore.TryRemove(key, out _);
                 response = "$-1\r\n";
             }
-            else
+            else if (storedValue.Value != null)
             {
                 response = $"${storedValue.Value.Length}\r\n{storedValue.Value}\r\n";
+            }
+            else
+            {
+                response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
             }
         }
         else
@@ -218,7 +222,21 @@ async Task HandleClient(Socket client)
                     response = "-ERR EXEC without MULTI\r\n";
                 }
             }
-            // If in transaction, queue the command (except MULTI/EXEC)
+            // DISCARD - Abort a transaction
+            else if (command == "DISCARD")
+            {
+                if (inTransaction)
+                {
+                    inTransaction = false;
+                    transactionQueue.Clear();
+                    response = "+OK\r\n";
+                }
+                else
+                {
+                    response = "-ERR DISCARD without MULTI\r\n";
+                }
+            }
+            // If in transaction, queue the command (except MULTI/EXEC/DISCARD)
             else if (inTransaction)
             {
                 // Queue this command for later execution
