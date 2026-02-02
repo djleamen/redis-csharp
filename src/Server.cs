@@ -154,8 +154,9 @@ async Task HandleClient(Socket client)
                 }
                 else
                 {
-                    // Key doesn't exist - will handle in later stages
-                    response = "-ERR no such key\r\n";
+                    // Key doesn't exist, set to 1
+                    dataStore[key] = new StoredValue("1");
+                    response = ":1\r\n";
                 }
             }
             // RPUSH - Append elements to a list
