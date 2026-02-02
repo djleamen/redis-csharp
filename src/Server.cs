@@ -159,6 +159,11 @@ async Task HandleClient(Socket client)
                     response = ":1\r\n";
                 }
             }
+            // MULTI - Start a transaction
+            else if (command == "MULTI")
+            {
+                response = "+OK\r\n";
+            }
             // RPUSH - Append elements to a list
             else if (command == "RPUSH" && parts.Length >= 3)
             {
