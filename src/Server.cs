@@ -164,6 +164,12 @@ async Task HandleClient(Socket client)
             {
                 response = "+OK\r\n";
             }
+            // EXEC - Execute a transaction
+            else if (command == "EXEC")
+            {
+                // For now, we only handle EXEC without MULTI
+                response = "-ERR EXEC without MULTI\r\n";
+            }
             // RPUSH - Append elements to a list
             else if (command == "RPUSH" && parts.Length >= 3)
             {
