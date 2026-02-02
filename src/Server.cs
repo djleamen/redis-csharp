@@ -115,6 +115,49 @@ async Task HandleClient(Socket client)
                     response = "$-1\r\n"; // Null bulk string
                 }
             }
+            // INCR - Increment the value of a key by 1
+            else if (command == "INCR" && parts.Length >= 2)
+            {
+                string key = parts[1];
+                
+                if (dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    // Check if key has expired
+                    if (storedValue.ExpiryMs.HasValue && 
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > storedValue.ExpiryMs.Value)
+                    {
+                        // Key expired, remove it
+                        dataStore.TryRemove(key, out _);
+                        response = "-ERR key expired\r\n";
+                    }
+                    else if (storedValue.Value != null)
+                    {
+                        // Try to parse the value as an integer
+                        if (int.TryParse(storedValue.Value, out int currentValue))
+                        {
+                            int newValue = currentValue + 1;
+                            // Update the stored value, preserving expiry
+                            dataStore[key] = new StoredValue(newValue.ToString(), storedValue.ExpiryMs);
+                            response = $":{newValue}\r\n";
+                        }
+                        else
+                        {
+                            // Value is not an integer
+                            response = "-ERR value is not an integer or out of range\r\n";
+                        }
+                    }
+                    else
+                    {
+                        // Key exists but is not a string (it's a list or stream)
+                        response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                    }
+                }
+                else
+                {
+                    // Key doesn't exist - will handle in later stages
+                    response = "-ERR no such key\r\n";
+                }
+            }
             // RPUSH - Append elements to a list
             else if (command == "RPUSH" && parts.Length >= 3)
             {
