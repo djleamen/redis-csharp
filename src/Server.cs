@@ -32,6 +32,7 @@ async Task HandleClient(Socket client)
 {
     // Track transaction state for this client
     bool inTransaction = false;
+    var transactionQueue = new List<string[]>();
     
     while (true)
     {
@@ -166,6 +167,7 @@ async Task HandleClient(Socket client)
             else if (command == "MULTI")
             {
                 inTransaction = true;
+                transactionQueue.Clear();
                 response = "+OK\r\n";
             }
             // EXEC - Execute a transaction
@@ -176,11 +178,19 @@ async Task HandleClient(Socket client)
                     // Execute the transaction (empty for now)
                     response = "*0\r\n";
                     inTransaction = false;
+                    transactionQueue.Clear();
                 }
                 else
                 {
                     response = "-ERR EXEC without MULTI\r\n";
                 }
+            }
+            // If in transaction, queue the command (except MULTI/EXEC)
+            else if (inTransaction)
+            {
+                // Queue this command for later execution
+                transactionQueue.Add(parts);
+                response = "+QUEUED\r\n";
             }
             // RPUSH - Append elements to a list
             else if (command == "RPUSH" && parts.Length >= 3)
