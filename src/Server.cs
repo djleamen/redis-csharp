@@ -55,8 +55,37 @@ async Task HandleClient(Socket client)
             string command = parts[0].ToUpper();
             string response = string.Empty;
             
+            // MULTI - Start a transaction
+            if (command == "MULTI")
+            {
+                inTransaction = true;
+                transactionQueue.Clear();
+                response = "+OK\r\n";
+            }
+            // EXEC - Execute a transaction
+            else if (command == "EXEC")
+            {
+                if (inTransaction)
+                {
+                    // Execute the transaction (empty for now)
+                    response = "*0\r\n";
+                    inTransaction = false;
+                    transactionQueue.Clear();
+                }
+                else
+                {
+                    response = "-ERR EXEC without MULTI\r\n";
+                }
+            }
+            // If in transaction, queue the command (except MULTI/EXEC)
+            else if (inTransaction)
+            {
+                // Queue this command for later execution
+                transactionQueue.Add(parts);
+                response = "+QUEUED\r\n";
+            }
             // PING and ECHO
-            if (command == "PING")
+            else if (command == "PING")
             {
                 response = "+PONG\r\n";
             }
@@ -162,35 +191,6 @@ async Task HandleClient(Socket client)
                     dataStore[key] = new StoredValue("1");
                     response = ":1\r\n";
                 }
-            }
-            // MULTI - Start a transaction
-            else if (command == "MULTI")
-            {
-                inTransaction = true;
-                transactionQueue.Clear();
-                response = "+OK\r\n";
-            }
-            // EXEC - Execute a transaction
-            else if (command == "EXEC")
-            {
-                if (inTransaction)
-                {
-                    // Execute the transaction (empty for now)
-                    response = "*0\r\n";
-                    inTransaction = false;
-                    transactionQueue.Clear();
-                }
-                else
-                {
-                    response = "-ERR EXEC without MULTI\r\n";
-                }
-            }
-            // If in transaction, queue the command (except MULTI/EXEC)
-            else if (inTransaction)
-            {
-                // Queue this command for later execution
-                transactionQueue.Add(parts);
-                response = "+QUEUED\r\n";
             }
             // RPUSH - Append elements to a list
             else if (command == "RPUSH" && parts.Length >= 3)
