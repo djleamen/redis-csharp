@@ -28,6 +28,131 @@ while (true)
     Task.Run(() => HandleClient(client));
 }
 
+async Task<string> ExecuteCommand(string[] parts, Socket client)
+{
+    if (parts.Length == 0)
+        return "-ERR empty command\r\n";
+    
+    string command = parts[0].ToUpper();
+    string response = string.Empty;
+    
+    // PING and ECHO
+    if (command == "PING")
+    {
+        response = "+PONG\r\n";
+    }
+    else if (command == "ECHO" && parts.Length > 1)
+    {
+        string message = parts[1];
+        response = $"${message.Length}\r\n{message}\r\n";
+    }
+    // SET and GET
+    else if (command == "SET" && parts.Length >= 3)
+    {
+        string key = parts[1];
+        string value = parts[2];
+        long? expiryMs = null;
+        
+        for (int i = 3; i < parts.Length - 1; i++)
+        {
+            string option = parts[i].ToUpper();
+            if (option == "PX")
+            {
+                if (long.TryParse(parts[i + 1], out long px))
+                {
+                    expiryMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + px;
+                }
+                break;
+            }
+            else if (option == "EX")
+            {
+                if (long.TryParse(parts[i + 1], out long ex))
+                {
+                    expiryMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (ex * 1000);
+                }
+                break;
+            }
+        }
+        
+        dataStore[key] = new StoredValue(value, expiryMs);
+        response = "+OK\r\n";
+    }
+    else if (command == "GET" && parts.Length > 1)
+    {
+        string key = parts[1];
+        if (dataStore.TryGetValue(key, out StoredValue? storedValue))
+        {
+            // Check if key has expired
+            if (storedValue.ExpiryMs.HasValue && 
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > storedValue.ExpiryMs.Value)
+            {
+                // Key expired, remove it and return null
+                dataStore.TryRemove(key, out _);
+                response = "$-1\r\n";
+            }
+            else
+            {
+                response = $"${storedValue.Value.Length}\r\n{storedValue.Value}\r\n";
+            }
+        }
+        else
+        {
+            response = "$-1\r\n"; // Null bulk string
+        }
+    }
+    // INCR - Increment the value of a key by 1
+    else if (command == "INCR" && parts.Length >= 2)
+    {
+        string key = parts[1];
+        
+        if (dataStore.TryGetValue(key, out StoredValue? storedValue))
+        {
+            // Check if key has expired
+            if (storedValue.ExpiryMs.HasValue && 
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > storedValue.ExpiryMs.Value)
+            {
+                // Key expired, remove it and treat as non-existent
+                dataStore.TryRemove(key, out _);
+                dataStore[key] = new StoredValue("1");
+                response = ":1\r\n";
+            }
+            else if (storedValue.Value != null)
+            {
+                // Try to parse the value as an integer
+                if (int.TryParse(storedValue.Value, out int currentValue))
+                {
+                    int newValue = currentValue + 1;
+                    // Update the stored value, preserving expiry
+                    dataStore[key] = new StoredValue(newValue.ToString(), storedValue.ExpiryMs);
+                    response = $":{newValue}\r\n";
+                }
+                else
+                {
+                    // Value is not an integer
+                    response = "-ERR value is not an integer or out of range\r\n";
+                }
+            }
+            else
+            {
+                // Key exists but is not a string (it's a list or stream)
+                response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            }
+        }
+        else
+        {
+            // Key doesn't exist, set to 1
+            dataStore[key] = new StoredValue("1");
+            response = ":1\r\n";
+        }
+    }
+    else
+    {
+        response = "-ERR unknown command\r\n";
+    }
+    
+    return response;
+}
+
 async Task HandleClient(Socket client)
 {
     // Track transaction state for this client
@@ -67,8 +192,24 @@ async Task HandleClient(Socket client)
             {
                 if (inTransaction)
                 {
-                    // Execute the transaction (empty for now)
-                    response = "*0\r\n";
+                    // Execute all queued commands
+                    var responses = new List<string>();
+                    
+                    foreach (var queuedCommand in transactionQueue)
+                    {
+                        string cmdResponse = await ExecuteCommand(queuedCommand, client);
+                        responses.Add(cmdResponse);
+                    }
+                    
+                    // Build RESP array response
+                    var sb = new StringBuilder();
+                    sb.Append($"*{responses.Count}\r\n");
+                    foreach (var resp in responses)
+                    {
+                        sb.Append(resp);
+                    }
+                    response = sb.ToString();
+                    
                     inTransaction = false;
                     transactionQueue.Clear();
                 }
