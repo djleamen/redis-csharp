@@ -8,6 +8,20 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
+// Parse command-line arguments
+int port = 6379; // Default port
+for (int i = 0; i < args.Length; i++)
+{
+    if (args[i] == "--port" && i + 1 < args.Length)
+    {
+        if (int.TryParse(args[i + 1], out int parsedPort))
+        {
+            port = parsedPort;
+        }
+        break;
+    }
+}
+
 // Thread-safe data store
 var dataStore = new ConcurrentDictionary<string, StoredValue>();
 
@@ -19,7 +33,7 @@ var blockedClientsLock = new object();
 var blockedStreamReaders = new ConcurrentDictionary<string, Queue<BlockedStreamReader>>();
 var blockedStreamReadersLock = new object();
 
-TcpListener server = new TcpListener(IPAddress.Any, 6379);
+TcpListener server = new TcpListener(IPAddress.Any, port);
 server.Start();
 
 while (true)
@@ -297,9 +311,13 @@ async Task HandleClient(Socket client)
                         dataStore.TryRemove(key, out _);
                         response = "$-1\r\n";
                     }
-                    else
+                    else if (storedValue.Value != null)
                     {
                         response = $"${storedValue.Value.Length}\r\n{storedValue.Value}\r\n";
+                    }
+                    else
+                    {
+                        response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                     }
                 }
                 else
