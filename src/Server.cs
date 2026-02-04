@@ -10,6 +10,9 @@ using System.Text;
 
 // Parse command-line arguments
 int port = 6379; // Default port
+string? masterHost = null;
+int? masterPort = null;
+
 for (int i = 0; i < args.Length; i++)
 {
     if (args[i] == "--port" && i + 1 < args.Length)
@@ -18,9 +21,20 @@ for (int i = 0; i < args.Length; i++)
         {
             port = parsedPort;
         }
-        break;
+    }
+    else if (args[i] == "--replicaof" && i + 1 < args.Length)
+    {
+        // Parse "host port" from the next argument
+        string[] parts = args[i + 1].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 2 && int.TryParse(parts[1], out int parsedMasterPort))
+        {
+            masterHost = parts[0];
+            masterPort = parsedMasterPort;
+        }
     }
 }
+
+bool isReplica = masterHost != null && masterPort.HasValue;
 
 // Thread-safe data store
 var dataStore = new ConcurrentDictionary<string, StoredValue>();
@@ -273,7 +287,8 @@ async Task HandleClient(Socket client)
                 // Check if replication section is requested (or no section specified)
                 if (parts.Length == 1 || parts[1].ToUpper() == "REPLICATION")
                 {
-                    string info = "role:master";
+                    string role = isReplica ? "slave" : "master";
+                    string info = $"role:{role}";
                     response = $"${info.Length}\r\n{info}\r\n";
                 }
                 else
