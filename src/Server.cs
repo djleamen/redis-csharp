@@ -8,7 +8,6 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-// Parse command-line arguments
 int port = 6379; // Default port
 string? masterHost = null;
 int? masterPort = null;
@@ -24,7 +23,6 @@ for (int i = 0; i < args.Length; i++)
     }
     else if (args[i] == "--replicaof" && i + 1 < args.Length)
     {
-        // Parse "host port" from the next argument
         string[] parts = args[i + 1].Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 2 && int.TryParse(parts[1], out int parsedMasterPort))
         {
@@ -36,18 +34,14 @@ for (int i = 0; i < args.Length; i++)
 
 bool isReplica = masterHost != null && masterPort.HasValue;
 
-// Replication configuration
 const string replicationId = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
 const int replicationOffset = 0;
 
-// Thread-safe data store
 var dataStore = new ConcurrentDictionary<string, StoredValue>();
 
-// Track blocked clients per key
 var blockedClients = new ConcurrentDictionary<string, Queue<BlockedClient>>();
 var blockedClientsLock = new object();
 
-// Track blocked stream readers per key
 var blockedStreamReaders = new ConcurrentDictionary<string, Queue<BlockedStreamReader>>();
 var blockedStreamReadersLock = new object();
 
@@ -66,6 +60,7 @@ while (true)
     Task.Run(() => HandleClient(client));
 }
 
+// Execute a single command and return the response
 async Task<string> ExecuteCommand(string[] parts, Socket client)
 {
     if (parts.Length == 0)
@@ -120,11 +115,9 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
         string key = parts[1];
         if (dataStore.TryGetValue(key, out StoredValue? storedValue))
         {
-            // Check if key has expired
             if (storedValue.ExpiryMs.HasValue && 
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > storedValue.ExpiryMs.Value)
             {
-                // Key expired, remove it and return null
                 dataStore.TryRemove(key, out _);
                 response = "$-1\r\n";
             }
@@ -139,7 +132,7 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
         }
         else
         {
-            response = "$-1\r\n"; // Null bulk string
+            response = "$-1\r\n";
         }
     }
     // INCR - Increment the value of a key by 1
@@ -149,40 +142,33 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
         
         if (dataStore.TryGetValue(key, out StoredValue? storedValue))
         {
-            // Check if key has expired
             if (storedValue.ExpiryMs.HasValue && 
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > storedValue.ExpiryMs.Value)
             {
-                // Key expired, remove it and treat as non-existent
                 dataStore.TryRemove(key, out _);
                 dataStore[key] = new StoredValue("1");
                 response = ":1\r\n";
             }
             else if (storedValue.Value != null)
             {
-                // Try to parse the value as an integer
                 if (int.TryParse(storedValue.Value, out int currentValue))
                 {
                     int newValue = currentValue + 1;
-                    // Update the stored value, preserving expiry
                     dataStore[key] = new StoredValue(newValue.ToString(), storedValue.ExpiryMs);
                     response = $":{newValue}\r\n";
                 }
                 else
                 {
-                    // Value is not an integer
                     response = "-ERR value is not an integer or out of range\r\n";
                 }
             }
             else
             {
-                // Key exists but is not a string (it's a list or stream)
                 response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
             }
         }
         else
         {
-            // Key doesn't exist, set to 1
             dataStore[key] = new StoredValue("1");
             response = ":1\r\n";
         }
@@ -195,15 +181,14 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
     return response;
 }
 
+// Connect to master server and perform replication handshake
 async Task ConnectToMaster(string host, int masterPort, int replicaPort)
 {
     try
     {
-        // Connect to master server
         var masterClient = new TcpClient();
         await masterClient.ConnectAsync(host, masterPort);
         
-        // Get the stream for sending data
         NetworkStream stream = masterClient.GetStream();
         byte[] buffer = new byte[1024];
         
@@ -211,8 +196,7 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         string pingCommand = "*1\r\n$4\r\nPING\r\n";
         byte[] pingBytes = Encoding.UTF8.GetBytes(pingCommand);
         await stream.WriteAsync(pingBytes, 0, pingBytes.Length);
-        
-        // Read PING response
+
         int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
@@ -222,7 +206,6 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         byte[] replconfPortBytes = Encoding.UTF8.GetBytes(replconfPort);
         await stream.WriteAsync(replconfPortBytes, 0, replconfPortBytes.Length);
         
-        // Read REPLCONF listening-port response
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
@@ -231,7 +214,6 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         byte[] replconfCapaBytes = Encoding.UTF8.GetBytes(replconfCapa);
         await stream.WriteAsync(replconfCapaBytes, 0, replconfCapaBytes.Length);
         
-        // Read REPLCONF capa response
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
@@ -240,12 +222,8 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         byte[] psyncBytes = Encoding.UTF8.GetBytes(psyncCommand);
         await stream.WriteAsync(psyncBytes, 0, psyncBytes.Length);
         
-        // Read PSYNC response (will be +FULLRESYNC <REPL_ID> 0\r\n)
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-        
-        // Keep connection open for future stages
-        // In later stages, we'll handle the RDB file transfer
     }
     catch (Exception ex)
     {
@@ -253,9 +231,9 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
     }
 }
 
+// Handle client connection
 async Task HandleClient(Socket client)
 {
-    // Track transaction state for this client
     bool inTransaction = false;
     var transactionQueue = new List<string[]>();
     
@@ -263,11 +241,9 @@ async Task HandleClient(Socket client)
     {
         try
         {
-            // Read incoming command
             byte[] buffer = new byte[1024];
             int bytesRead = client.Receive(buffer);
             
-            // Client disconnected
             if (bytesRead == 0)
                 break;
             
@@ -292,7 +268,6 @@ async Task HandleClient(Socket client)
             {
                 if (inTransaction)
                 {
-                    // Execute all queued commands
                     var responses = new List<string>();
                     
                     foreach (var queuedCommand in transactionQueue)
@@ -301,7 +276,6 @@ async Task HandleClient(Socket client)
                         responses.Add(cmdResponse);
                     }
                     
-                    // Build RESP array response
                     var sb = new StringBuilder();
                     sb.Append($"*{responses.Count}\r\n");
                     foreach (var resp in responses)
@@ -332,10 +306,8 @@ async Task HandleClient(Socket client)
                     response = "-ERR DISCARD without MULTI\r\n";
                 }
             }
-            // If in transaction, queue the command (except MULTI/EXEC/DISCARD)
             else if (inTransaction)
             {
-                // Queue this command for later execution
                 transactionQueue.Add(parts);
                 response = "+QUEUED\r\n";
             }
@@ -352,7 +324,6 @@ async Task HandleClient(Socket client)
             // INFO - Get server information
             else if (command == "INFO")
             {
-                // Check if replication section is requested (or no section specified)
                 if (parts.Length == 1 || parts[1].ToUpper() == "REPLICATION")
                 {
                     string role = isReplica ? "slave" : "master";
@@ -360,12 +331,10 @@ async Task HandleClient(Socket client)
                     
                     if (isReplica)
                     {
-                        // Replica only returns role for now
                         info = $"role:{role}";
                     }
                     else
                     {
-                        // Master returns role, replication ID, and offset
                         info = $"role:{role}\r\nmaster_replid:{replicationId}\r\nmaster_repl_offset:{replicationOffset}";
                     }
                     
@@ -373,9 +342,14 @@ async Task HandleClient(Socket client)
                 }
                 else
                 {
-                    // For other sections, return empty bulk string for now
                     response = "$0\r\n\r\n";
                 }
+            }
+            // REPLCONF - Replication configuration (used during handshake)
+            else if (command == "REPLCONF")
+            {
+                // For this stage, we can safely ignore the arguments and respond with OK
+                response = "+OK\r\n";
             }
             // SET and GET
             else if (command == "SET" && parts.Length >= 3)
@@ -413,11 +387,9 @@ async Task HandleClient(Socket client)
                 string key = parts[1];
                 if (dataStore.TryGetValue(key, out StoredValue? storedValue))
                 {
-                    // Check if key has expired
                     if (storedValue.ExpiryMs.HasValue && 
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > storedValue.ExpiryMs.Value)
                     {
-                        // Key expired, remove it and return null
                         dataStore.TryRemove(key, out _);
                         response = "$-1\r\n";
                     }
@@ -446,35 +418,29 @@ async Task HandleClient(Socket client)
                     if (storedValue.ExpiryMs.HasValue && 
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > storedValue.ExpiryMs.Value)
                     {
-                        // Key expired, remove it
                         dataStore.TryRemove(key, out _);
                         response = "-ERR key expired\r\n";
                     }
                     else if (storedValue.Value != null)
                     {
-                        // Try to parse the value as an integer
                         if (int.TryParse(storedValue.Value, out int currentValue))
                         {
                             int newValue = currentValue + 1;
-                            // Update the stored value, preserving expiry
                             dataStore[key] = new StoredValue(newValue.ToString(), storedValue.ExpiryMs);
                             response = $":{newValue}\r\n";
                         }
                         else
                         {
-                            // Value is not an integer
                             response = "-ERR value is not an integer or out of range\r\n";
                         }
                     }
                     else
                     {
-                        // Key exists but is not a string (it's a list or stream)
                         response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                     }
                 }
                 else
                 {
-                    // Key doesn't exist, set to 1
                     dataStore[key] = new StoredValue("1");
                     response = ":1\r\n";
                 }
@@ -483,13 +449,11 @@ async Task HandleClient(Socket client)
             else if (command == "RPUSH" && parts.Length >= 3)
             {
                 string key = parts[1];
-                // Get all elements to append (from index 2 onwards)
                 var elements = parts.Skip(2).ToArray();
                 bool shouldUnblock = false;
                 
                 if (!dataStore.ContainsKey(key))
                 {
-                    // Create new list with all elements
                     var list = new List<string>(elements);
                     dataStore[key] = new StoredValue(list);
                     response = $":{list.Count}\r\n";
@@ -510,15 +474,13 @@ async Task HandleClient(Socket client)
                     }
                 }
                 
-                // Send response first
                 if (!string.IsNullOrEmpty(response))
                 {
                     byte[] responseBytes = Encoding.UTF8.GetBytes(response);
                     client.Send(responseBytes);
-                    response = string.Empty; // Mark as sent
+                    response = string.Empty;
                 }
                 
-                // Then check if there are blocked clients waiting for this key
                 if (shouldUnblock)
                 {
                     UnblockWaitingClients(key);
@@ -556,15 +518,13 @@ async Task HandleClient(Socket client)
                     }
                 }
                 
-                // Send response first
                 if (!string.IsNullOrEmpty(response))
                 {
                     byte[] responseBytes = Encoding.UTF8.GetBytes(response);
                     client.Send(responseBytes);
-                    response = string.Empty; // Mark as sent
+                    response = string.Empty;
                 }
                 
-                // Then check if there are blocked clients waiting for this key
                 if (shouldUnblock)
                 {
                     UnblockWaitingClients(key);
@@ -631,12 +591,10 @@ async Task HandleClient(Socket client)
                 
                 if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
                 {
-                    // Key doesn't exist, return 0
                     response = ":0\r\n";
                 }
                 else if (storedValue.List == null)
                 {
-                    // Key exists but is not a list
                     response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                 }
                 else
@@ -650,7 +608,6 @@ async Task HandleClient(Socket client)
                 string key = parts[1];
                 int count = 1; // Default to 1 element
                 
-                // Check if count parameter is provided
                 if (parts.Length >= 3)
                 {
                     if (!int.TryParse(parts[2], out count) || count < 1)
@@ -662,27 +619,22 @@ async Task HandleClient(Socket client)
                 
                 if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
                 {
-                    // Key doesn't exist, return null
                     response = "$-1\r\n";
                 }
                 else if (storedValue.List == null)
                 {
-                    // Key exists but is not a list
                     response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                 }
                 else if (storedValue.List.Count == 0)
                 {
-                    // List is empty
                     response = "$-1\r\n";
                 }
                 else
                 {
-                    // Determine how many elements to remove
                     int elementsToRemove = Math.Min(count, storedValue.List.Count);
                     
                     if (parts.Length >= 3)
                     {
-                        // Return multiple elements as RESP array
                         var removedElements = new List<string>();
                         for (int i = 0; i < elementsToRemove; i++)
                         {
@@ -700,7 +652,6 @@ async Task HandleClient(Socket client)
                     }
                     else
                     {
-                        // Return single element as bulk string
                         string element = storedValue.List[0];
                         storedValue.List.RemoveAt(0);
                         response = $"${element.Length}\r\n{element}\r\n";
@@ -720,11 +671,9 @@ async Task HandleClient(Socket client)
                 }
                 else if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null && storedValue.List.Count > 0)
                 {
-                    // List has elements, pop immediately
                     string element = storedValue.List[0];
                     storedValue.List.RemoveAt(0);
                     
-                    // Return array: [key, element]
                     var sb = new StringBuilder();
                     sb.Append("*2\r\n");
                     sb.Append($"${key.Length}\r\n{key}\r\n");
@@ -733,7 +682,6 @@ async Task HandleClient(Socket client)
                 }
                 else
                 {
-                    // List is empty or doesn't exist, block
                     var tcs = new TaskCompletionSource<string?>();
                     
                     lock (blockedClientsLock)
@@ -745,20 +693,17 @@ async Task HandleClient(Socket client)
                         blockedClients[key].Enqueue(new BlockedClient(key, tcs));
                     }
                     
-                    // Wait for element to become available or timeout
                     Task<string?> elementTask = tcs.Task;
                     Task completedTask;
                     
                     if (timeout > 0)
                     {
-                        // Wait with timeout
                         int timeoutMs = (int)(timeout * 1000);
                         Task delayTask = Task.Delay(timeoutMs);
                         completedTask = await Task.WhenAny(elementTask, delayTask);
                     }
                     else
                     {
-                        // Wait indefinitely (timeout = 0)
                         await elementTask;
                         completedTask = elementTask;
                     }
@@ -767,17 +712,14 @@ async Task HandleClient(Socket client)
                     
                     if (completedTask == elementTask && elementTask.IsCompletedSuccessfully)
                     {
-                        // Element became available
                         poppedElement = elementTask.Result;
                     }
                     else
                     {
-                        // Timeout reached - need to remove this client from the blocked queue
                         lock (blockedClientsLock)
                         {
                             if (blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue))
                             {
-                                // Remove this client from the queue if it's still there
                                 var tempQueue = new Queue<BlockedClient>();
                                 while (queue.Count > 0)
                                 {
@@ -799,13 +741,11 @@ async Task HandleClient(Socket client)
                             }
                         }
                         
-                        // Set the TCS to cancelled state if not already completed
                         tcs.TrySetResult(null);
                     }
                     
                     if (poppedElement != null)
                     {
-                        // Return array: [key, element]
                         var sb = new StringBuilder();
                         sb.Append("*2\r\n");
                         sb.Append($"${key.Length}\r\n{key}\r\n");
@@ -814,7 +754,6 @@ async Task HandleClient(Socket client)
                     }
                     else
                     {
-                        // Timeout reached
                         response = "*-1\r\n";
                     }
                 }
@@ -826,16 +765,13 @@ async Task HandleClient(Socket client)
                 
                 if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
                 {
-                    // Key doesn't exist
                     response = "+none\r\n";
                 }
                 else if (storedValue.Value != null)
                 {
-                    // Check if expired
                     if (storedValue.ExpiryMs.HasValue && 
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > storedValue.ExpiryMs.Value)
                     {
-                        // Key expired, treat as non-existent
                         dataStore.TryRemove(key, out _);
                         response = "+none\r\n";
                     }
@@ -854,7 +790,6 @@ async Task HandleClient(Socket client)
                 }
                 else
                 {
-                    // Unknown type
                     response = "+none\r\n";
                 }
             }
@@ -864,7 +799,6 @@ async Task HandleClient(Socket client)
                 string key = parts[1];
                 string entryId = parts[2];
                 
-                // Parse key-value pairs (must be even number of arguments after entry ID)
                 int fieldCount = parts.Length - 3;
                 if (fieldCount % 2 != 0)
                 {
@@ -875,13 +809,10 @@ async Task HandleClient(Socket client)
                     long millisTime = 0;
                     long seqNum = 0;
                     
-                    // Check if entire ID is auto-generated (*)
                     if (entryId == "*")
                     {
-                        // Auto-generate both time and sequence number
                         millisTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                         
-                        // Check if this timestamp already exists in the stream
                         if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.Stream != null && storedValue.Stream.Count > 0)
                         {
                             var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
@@ -889,12 +820,10 @@ async Task HandleClient(Socket client)
                             long lastMillisTime = long.Parse(lastIdParts[0]);
                             long lastSeqNum = long.Parse(lastIdParts[1]);
                             
-                            // If same time part, increment sequence number
                             if (millisTime == lastMillisTime)
                             {
                                 seqNum = lastSeqNum + 1;
                             }
-                            // If current time is less than or equal to last time, use last time + 1
                             else if (millisTime <= lastMillisTime)
                             {
                                 millisTime = lastMillisTime;
@@ -912,7 +841,6 @@ async Task HandleClient(Socket client)
                         
                         entryId = $"{millisTime}-{seqNum}";
                     }
-                    // Parse and validate entry ID
                     else
                     {
                         string[] idParts = entryId.Split('-');
@@ -922,26 +850,22 @@ async Task HandleClient(Socket client)
                         }
                         else if (idParts[1] == "*")
                         {
-                            // Auto-generate sequence number only
                             if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.Stream != null && storedValue.Stream.Count > 0)
                             {
-                                // Get the last entry
                                 var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
                                 string[] lastIdParts = lastEntry.Id.Split('-');
                                 long lastMillisTime = long.Parse(lastIdParts[0]);
                                 long lastSeqNum = long.Parse(lastIdParts[1]);
                                 
-                                // If same time part, increment sequence number
                                 if (millisTime == lastMillisTime)
                                 {
                                     seqNum = lastSeqNum + 1;
                                 }
                                 else
                                 {
-                                    // Different time part
                                     if (millisTime == 0)
                                     {
-                                        seqNum = 1; // Special case for time=0
+                                        seqNum = 1;
                                     }
                                     else
                                     {
@@ -951,10 +875,9 @@ async Task HandleClient(Socket client)
                             }
                             else
                             {
-                                // Stream is empty
                                 if (millisTime == 0)
                                 {
-                                    seqNum = 1; // Special case for time=0
+                                    seqNum = 1;
                                 }
                                 else
                                 {
@@ -962,7 +885,6 @@ async Task HandleClient(Socket client)
                                 }
                             }
                             
-                            // Update entry ID with generated sequence number
                             entryId = $"{millisTime}-{seqNum}";
                         }
                         else if (!long.TryParse(idParts[1], out seqNum))
@@ -973,24 +895,20 @@ async Task HandleClient(Socket client)
                     
                     if (string.IsNullOrEmpty(response))
                     {
-                        // Validate that ID is greater than 0-0
                         if (millisTime == 0 && seqNum == 0)
                         {
                             response = "-ERR The ID specified in XADD must be greater than 0-0\r\n";
                         }
                         else
                         {
-                            // Check if we need to validate against existing stream
                             bool isValid = true;
                             if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.Stream != null && storedValue.Stream.Count > 0)
                             {
-                                // Get the last entry
                                 var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
                                 string[] lastIdParts = lastEntry.Id.Split('-');
                                 long lastMillisTime = long.Parse(lastIdParts[0]);
                                 long lastSeqNum = long.Parse(lastIdParts[1]);
                                 
-                                // New ID must be strictly greater than last ID
                                 if (millisTime < lastMillisTime)
                                 {
                                     isValid = false;
@@ -1018,7 +936,6 @@ async Task HandleClient(Socket client)
                                 
                                 if (!dataStore.ContainsKey(key))
                                 {
-                                    // Create new stream
                                     var stream = new List<StreamEntry> { entry };
                                     dataStore[key] = new StoredValue(stream);
                                     response = $"${entryId.Length}\r\n{entryId}\r\n";
@@ -1027,7 +944,6 @@ async Task HandleClient(Socket client)
                                 {
                                     if (dataStore.TryGetValue(key, out StoredValue? existingValue) && existingValue.Stream != null)
                                     {
-                                        // Append to existing stream
                                         existingValue.Stream.Add(entry);
                                         response = $"${entryId.Length}\r\n{entryId}\r\n";
                                     }
@@ -1037,7 +953,6 @@ async Task HandleClient(Socket client)
                                     }
                                 }
                                 
-                                // Unblock waiting stream readers
                                 UnblockWaitingStreamReaders(key);
                             }
                         }
@@ -1047,11 +962,9 @@ async Task HandleClient(Socket client)
             // XREAD - Read data from streams starting from a specified ID (exclusive)
             else if (command == "XREAD" && parts.Length >= 4)
             {
-                // Expected format: XREAD [BLOCK <milliseconds>] STREAMS <key1> <key2> ... <id1> <id2> ...
                 int blockTimeout = -1;
                 int streamsIndex = 1;
                 
-                // Check for BLOCK option
                 if (parts[1].ToUpper() == "BLOCK")
                 {
                     if (parts.Length < 6)
@@ -1077,9 +990,7 @@ async Task HandleClient(Socket client)
                 }
                 else
                 {
-                    // Calculate number of streams
-                    // After "STREAMS", we have N keys followed by N IDs
-                    int argsAfterStreams = parts.Length - streamsIndex - 1; // Skip to after STREAMS
+                    int argsAfterStreams = parts.Length - streamsIndex - 1;
                     if (argsAfterStreams % 2 != 0)
                     {
                         response = "-ERR wrong number of arguments for XREAD\r\n";
@@ -1090,19 +1001,16 @@ async Task HandleClient(Socket client)
                         var keys = new string[streamCount];
                         var ids = new string[streamCount];
                         
-                        // Parse keys and IDs
                         for (int i = 0; i < streamCount; i++)
                         {
                             keys[i] = parts[streamsIndex + 1 + i];
                             ids[i] = parts[streamsIndex + 1 + streamCount + i];
                             
-                            // Handle $ - replace with current maximum ID in stream
                             if (ids[i] == "$")
                             {
                                 if (dataStore.TryGetValue(keys[i], out StoredValue? storedValue) && storedValue.Stream != null && storedValue.Stream.Count > 0)
                                 {
-                                    // Get the last entry's ID (maximum ID currently in stream)
-                                    var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
+\                                    var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
                                     ids[i] = lastEntry.Id;
                                 }
                                 else
