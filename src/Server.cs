@@ -354,7 +354,20 @@ async Task HandleClient(Socket client)
             // PSYNC - Synchronize replica with master
             else if (command == "PSYNC" && parts.Length >= 3)
             {
+                // Send FULLRESYNC response
                 response = $"+FULLRESYNC {replicationId} {replicationOffset}\r\n";
+                byte[] fullresyncBytes = Encoding.UTF8.GetBytes(response);
+                client.Send(fullresyncBytes);
+                response = string.Empty;
+
+                string emptyRdbBase64 = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXC7QhcZfoIdXNlZC1tZW3CsMAQAPo4YW9mLWJhc2XAAP/wbjv+wP9aog==";
+                byte[] emptyRdbFile = Convert.FromBase64String(emptyRdbBase64);
+                
+                string rdbHeader = $"${emptyRdbFile.Length}\r\n";
+                byte[] rdbHeaderBytes = Encoding.UTF8.GetBytes(rdbHeader);
+                
+                client.Send(rdbHeaderBytes);
+                client.Send(emptyRdbFile);
             }
             // SET and GET
             else if (command == "SET" && parts.Length >= 3)
