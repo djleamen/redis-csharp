@@ -57,7 +57,7 @@ server.Start();
 // If this is a replica, initiate handshake with master
 if (isReplica && masterHost != null && masterPort.HasValue)
 {
-    Task.Run(() => ConnectToMaster(masterHost, masterPort.Value));
+    Task.Run(() => ConnectToMaster(masterHost, masterPort.Value, port));
 }
 
 while (true)
@@ -195,29 +195,48 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
     return response;
 }
 
-async Task ConnectToMaster(string host, int port)
+async Task ConnectToMaster(string host, int masterPort, int replicaPort)
 {
     try
     {
         // Connect to master server
         var masterClient = new TcpClient();
-        await masterClient.ConnectAsync(host, port);
+        await masterClient.ConnectAsync(host, masterPort);
         
         // Get the stream for sending data
         NetworkStream stream = masterClient.GetStream();
+        byte[] buffer = new byte[1024];
         
-        // Send PING command as RESP array
+        // Step 1: Send PING command as RESP array
         string pingCommand = "*1\r\n$4\r\nPING\r\n";
         byte[] pingBytes = Encoding.UTF8.GetBytes(pingCommand);
         await stream.WriteAsync(pingBytes, 0, pingBytes.Length);
         
-        // Read response (for now, we just initiate the handshake)
-        byte[] buffer = new byte[1024];
+        // Read PING response
         int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
+        // Step 2: Send REPLCONF listening-port <PORT>
+        string portStr = replicaPort.ToString();
+        string replconfPort = $"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${portStr.Length}\r\n{portStr}\r\n";
+        byte[] replconfPortBytes = Encoding.UTF8.GetBytes(replconfPort);
+        await stream.WriteAsync(replconfPortBytes, 0, replconfPortBytes.Length);
+        
+        // Read REPLCONF listening-port response
+        bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+        response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+        
+        // Step 3: Send REPLCONF capa psync2
+        string replconfCapa = "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
+        byte[] replconfCapaBytes = Encoding.UTF8.GetBytes(replconfCapa);
+        await stream.WriteAsync(replconfCapaBytes, 0, replconfCapaBytes.Length);
+        
+        // Read REPLCONF capa response
+        bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+        response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+        
         // Keep connection open for future stages
-        // In later stages, we'll handle REPLCONF and PSYNC here
+        // In later stages, we'll handle PSYNC here
     }
     catch (Exception ex)
     {
