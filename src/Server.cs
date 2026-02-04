@@ -60,7 +60,7 @@ while (true)
     Task.Run(() => HandleClient(client));
 }
 
-// Execute a single command and return the response
+/* Execute a single command and return the response */
 async Task<string> ExecuteCommand(string[] parts, Socket client)
 {
     if (parts.Length == 0)
@@ -181,7 +181,7 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
     return response;
 }
 
-// Connect to master server and perform replication handshake
+/* Connect to master server and perform replication handshake */
 async Task ConnectToMaster(string host, int masterPort, int replicaPort)
 {
     try
@@ -231,7 +231,7 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
     }
 }
 
-// Handle client connection
+/* Handle client connection */
 async Task HandleClient(Socket client)
 {
     bool inTransaction = false;
@@ -606,7 +606,7 @@ async Task HandleClient(Socket client)
             else if (command == "LPOP" && parts.Length >= 2)
             {
                 string key = parts[1];
-                int count = 1; // Default to 1 element
+                int count = 1;
                 
                 if (parts.Length >= 3)
                 {
@@ -1010,12 +1010,11 @@ async Task HandleClient(Socket client)
                             {
                                 if (dataStore.TryGetValue(keys[i], out StoredValue? storedValue) && storedValue.Stream != null && storedValue.Stream.Count > 0)
                                 {
-\                                    var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
+                                    var lastEntry = storedValue.Stream[storedValue.Stream.Count - 1];
                                     ids[i] = lastEntry.Id;
                                 }
                                 else
                                 {
-                                    // Stream is empty or doesn't exist, use 0-0 so any new entries will be returned
                                     ids[i] = "0-0";
                                 }
                             }
@@ -1031,10 +1030,8 @@ async Task HandleClient(Socket client)
                             
                             if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.Stream != null)
                             {
-                                // Parse start ID
                                 var (startMillis, startSeq) = ParseStreamId(startId, true);
                                 
-                                // Filter entries with ID greater than start ID (exclusive)
                                 var matchingEntries = new List<StreamEntry>();
                                 foreach (var entry in storedValue.Stream)
                                 {
@@ -1042,7 +1039,6 @@ async Task HandleClient(Socket client)
                                     long entryMillis = long.Parse(idParts[0]);
                                     long entrySeq = long.Parse(idParts[1]);
                                     
-                                    // Check if entry ID is greater than start ID
                                     bool isGreater = false;
                                     if (entryMillis > startMillis)
                                     {
@@ -1059,7 +1055,6 @@ async Task HandleClient(Socket client)
                                     }
                                 }
                                 
-                                // Only add stream to results if it has matching entries
                                 if (matchingEntries.Count > 0)
                                 {
                                     streamResults.Add((key, matchingEntries));
@@ -1070,10 +1065,8 @@ async Task HandleClient(Socket client)
                         // Build RESP response
                         if (streamResults.Count == 0 && blockTimeout >= 0)
                         {
-                            // No entries available and blocking is enabled
                             var tcs = new TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?>(TaskCreationOptions.RunContinuationsAsynchronously);
                             
-                            // Register this client as blocked for all requested streams
                             lock (blockedStreamReadersLock)
                             {
                                 for (int i = 0; i < streamCount; i++)
@@ -1087,7 +1080,6 @@ async Task HandleClient(Socket client)
                                 }
                             }
                             
-                            // Wait for entries or timeout
                             Task<List<(string key, List<StreamEntry> entries)>?> entriesTask = tcs.Task;
                             Task completedTask;
                             
@@ -1098,12 +1090,10 @@ async Task HandleClient(Socket client)
                             }
                             else
                             {
-                                // Block indefinitely
                                 await entriesTask;
                                 completedTask = entriesTask;
                             }
                             
-                            // Clean up - remove this client from blocked queues if still there
                             lock (blockedStreamReadersLock)
                             {
                                 for (int i = 0; i < streamCount; i++)
@@ -1135,55 +1125,44 @@ async Task HandleClient(Socket client)
                             
                             if (entriesTask.IsCompletedSuccessfully && entriesTask.Result != null)
                             {
-                                // Got entries, use them
                                 streamResults = entriesTask.Result;
                             }
                             else if (completedTask == entriesTask)
                             {
-                                // Task completed but not successfully (cancelled or faulted)
                                 response = "*-1\r\n";
                             }
                             else
                             {
-                                // Timeout - return null array
                                 response = "*-1\r\n";
                             }
                         }
                         
-                        // Build response if we have results and no response set yet
                         if (string.IsNullOrEmpty(response))
                         {
                             if (streamResults.Count == 0)
                             {
-                                // No matching entries in any stream
                                 response = "*-1\r\n";
                             }
                             else
                             {
                                 var sb = new StringBuilder();
                                 
-                                // Return array of streams
                                 sb.Append($"*{streamResults.Count}\r\n");
                                 
                                 foreach (var (key, matchingEntries) in streamResults)
                                 {
-                                    // Stream entry (contains key and entries array)
                                     sb.Append("*2\r\n");
                                     
-                                    // Stream key
                                     sb.Append($"${key.Length}\r\n{key}\r\n");
                                     
-                                    // Entries array
                                     sb.Append($"*{matchingEntries.Count}\r\n");
                                     
                                     foreach (var entry in matchingEntries)
                                     {
                                         sb.Append("*2\r\n");
                                         
-                                        // Entry ID
                                         sb.Append($"${entry.Id.Length}\r\n{entry.Id}\r\n");
                                         
-                                        // Fields array
                                         sb.Append($"*{entry.Fields.Count * 2}\r\n");
                                         foreach (var kvp in entry.Fields)
                                         {
@@ -1210,21 +1189,17 @@ async Task HandleClient(Socket client)
                 
                 if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
                 {
-                    // Key doesn't exist, return empty array
                     response = "*0\r\n";
                 }
                 else if (storedValue.Stream == null)
                 {
-                    // Key exists but is not a stream
                     response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                 }
                 else
                 {
-                    // Parse start and end IDs
                     var (startMillis, startSeq) = ParseStreamId(startId, true);
                     var (endMillis, endSeq) = ParseStreamId(endId, false);
                     
-                    // Filter entries within range
                     var matchingEntries = new List<StreamEntry>();
                     foreach (var entry in storedValue.Stream)
                     {
@@ -1232,7 +1207,6 @@ async Task HandleClient(Socket client)
                         long entryMillis = long.Parse(idParts[0]);
                         long entrySeq = long.Parse(idParts[1]);
                         
-                        // Check if entry is within range (inclusive)
                         bool isInRange = false;
                         if (entryMillis > startMillis && entryMillis < endMillis)
                         {
@@ -1257,7 +1231,6 @@ async Task HandleClient(Socket client)
                         }
                     }
                     
-                    // Build RESP response
                     var sb = new StringBuilder();
                     sb.Append($"*{matchingEntries.Count}\r\n");
                     
@@ -1265,10 +1238,8 @@ async Task HandleClient(Socket client)
                     {
                         sb.Append("*2\r\n");
                         
-                        // Entry ID
                         sb.Append($"${entry.Id.Length}\r\n{entry.Id}\r\n");
                         
-                        // Fields array
                         sb.Append($"*{entry.Fields.Count * 2}\r\n");
                         foreach (var kvp in entry.Fields)
                         {
@@ -1285,7 +1256,6 @@ async Task HandleClient(Socket client)
                 response = "-ERR unknown command\r\n";
             }
             
-            // Send response if we have one
             if (!string.IsNullOrEmpty(response))
             {
                 byte[] responseBytes = Encoding.UTF8.GetBytes(response);
@@ -1301,24 +1271,21 @@ async Task HandleClient(Socket client)
     client.Close();
 }
 
+/* Unblock waiting clients for a given key */
 void UnblockWaitingClients(string key)
 {
     lock (blockedClientsLock)
     {
-        // Keep unblocking clients while there are both blocked clients and elements
         while (blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue) && queue.Count > 0)
         {
-            // Check if there are elements in the list
             if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.List != null && storedValue.List.Count > 0)
             {
                 var blockedClient = queue.Dequeue();
                 string element = storedValue.List[0];
                 storedValue.List.RemoveAt(0);
                 
-                // Unblock the client by completing the TaskCompletionSource
                 blockedClient.TaskCompletionSource.SetResult(element);
                 
-                // Clean up empty queue
                 if (queue.Count == 0)
                 {
                     blockedClients.TryRemove(key, out _);
@@ -1326,23 +1293,20 @@ void UnblockWaitingClients(string key)
             }
             else
             {
-                // No more elements, stop unblocking
                 break;
             }
         }
     }
 }
 
-// Helper function to parse stream ID with optional sequence number
+/* Parse stream ID into milliseconds and sequence number */
 (long, long) ParseStreamId(string id, bool isStart)
 {
-    // Handle special case for '-' (beginning or end of stream)
     if (id == "-")
     {
         return isStart ? (0, 0) : (long.MaxValue, long.MaxValue);
     }
     
-    // Handle special case for '+' (end of stream)
     if (id == "+")
     {
         return (long.MaxValue, long.MaxValue);
@@ -1354,7 +1318,6 @@ void UnblockWaitingClients(string key)
     
     if (parts.Length == 1)
     {
-        // No sequence number provided
         seq = isStart ? 0 : long.MaxValue;
     }
     else
@@ -1365,7 +1328,7 @@ void UnblockWaitingClients(string key)
     return (millis, seq);
 }
 
-// Simple RESP array parser
+/* Parse RESP array from input string */
 string[] ParseRespArray(string input)
 {
     var parts = new List<string>();
@@ -1379,7 +1342,7 @@ string[] ParseRespArray(string input)
     {
         if (lines[i].StartsWith('$'))
         {
-            i++; // Skip the length line
+            i++;
             if (i < lines.Length)
             {
                 parts.Add(lines[i]);
@@ -1395,13 +1358,13 @@ string[] ParseRespArray(string input)
     return parts.ToArray();
 }
 
+/* Unblock waiting stream readers for a given key */
 void UnblockWaitingStreamReaders(string key)
 {
     lock (blockedStreamReadersLock)
     {
         if (blockedStreamReaders.TryGetValue(key, out Queue<BlockedStreamReader>? queue) && queue.Count > 0)
         {
-            // Process all blocked readers for this key
             var readersToUnblock = new List<BlockedStreamReader>();
             while (queue.Count > 0)
             {
@@ -1409,10 +1372,8 @@ void UnblockWaitingStreamReaders(string key)
             }
             blockedStreamReaders.TryRemove(key, out _);
             
-            // Unblock each reader
             foreach (var reader in readersToUnblock)
             {
-                // Query all streams for this reader
                 var results = new List<(string key, List<StreamEntry> entries)>();
                 
                 for (int i = 0; i < reader.Keys.Length; i++)
@@ -1463,16 +1424,16 @@ void UnblockWaitingStreamReaders(string key)
     }
 }
 
-// Blocked client waiting for list element
+/* Blocked client waiting for an element from a list */
 record BlockedClient(string Key, TaskCompletionSource<string?> TaskCompletionSource);
 
-// Blocked stream reader waiting for new entries
+/* Blocked stream reader waiting for new entries */
 record BlockedStreamReader(string[] Keys, string[] Ids, TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?> TaskCompletionSource);
 
-// Stream entry with ID and key-value pairs
+/* Stream entry with ID and key-value pairs */
 record StreamEntry(string Id, Dictionary<string, string> Fields);
 
-// Store value and expiry time
+/* Store value and expiry time */
 record StoredValue
 {
     public string? Value { get; init; }
