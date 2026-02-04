@@ -267,6 +267,21 @@ async Task HandleClient(Socket client)
                 string message = parts[1];
                 response = $"${message.Length}\r\n{message}\r\n";
             }
+            // INFO - Get server information
+            else if (command == "INFO")
+            {
+                // Check if replication section is requested (or no section specified)
+                if (parts.Length == 1 || parts[1].ToUpper() == "REPLICATION")
+                {
+                    string info = "role:master";
+                    response = $"${info.Length}\r\n{info}\r\n";
+                }
+                else
+                {
+                    // For other sections, return empty bulk string for now
+                    response = "$0\r\n\r\n";
+                }
+            }
             // SET and GET
             else if (command == "SET" && parts.Length >= 3)
             {
