@@ -235,8 +235,17 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
+        // Step 4: Send PSYNC ? -1
+        string psyncCommand = "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
+        byte[] psyncBytes = Encoding.UTF8.GetBytes(psyncCommand);
+        await stream.WriteAsync(psyncBytes, 0, psyncBytes.Length);
+        
+        // Read PSYNC response (will be +FULLRESYNC <REPL_ID> 0\r\n)
+        bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+        response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+        
         // Keep connection open for future stages
-        // In later stages, we'll handle PSYNC here
+        // In later stages, we'll handle the RDB file transfer
     }
     catch (Exception ex)
     {
