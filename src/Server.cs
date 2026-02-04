@@ -54,6 +54,12 @@ var blockedStreamReadersLock = new object();
 TcpListener server = new TcpListener(IPAddress.Any, port);
 server.Start();
 
+// If this is a replica, initiate handshake with master
+if (isReplica && masterHost != null && masterPort.HasValue)
+{
+    Task.Run(() => ConnectToMaster(masterHost, masterPort.Value));
+}
+
 while (true)
 {
     Socket client = server.AcceptSocket();
@@ -187,6 +193,36 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
     }
     
     return response;
+}
+
+async Task ConnectToMaster(string host, int port)
+{
+    try
+    {
+        // Connect to master server
+        var masterClient = new TcpClient();
+        await masterClient.ConnectAsync(host, port);
+        
+        // Get the stream for sending data
+        NetworkStream stream = masterClient.GetStream();
+        
+        // Send PING command as RESP array
+        string pingCommand = "*1\r\n$4\r\nPING\r\n";
+        byte[] pingBytes = Encoding.UTF8.GetBytes(pingCommand);
+        await stream.WriteAsync(pingBytes, 0, pingBytes.Length);
+        
+        // Read response (for now, we just initiate the handshake)
+        byte[] buffer = new byte[1024];
+        int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+        string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+        
+        // Keep connection open for future stages
+        // In later stages, we'll handle REPLCONF and PSYNC here
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error connecting to master: {ex.Message}");
+    }
 }
 
 async Task HandleClient(Socket client)
