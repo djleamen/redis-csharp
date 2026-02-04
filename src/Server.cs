@@ -36,6 +36,10 @@ for (int i = 0; i < args.Length; i++)
 
 bool isReplica = masterHost != null && masterPort.HasValue;
 
+// Replication configuration
+const string replicationId = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+const int replicationOffset = 0;
+
 // Thread-safe data store
 var dataStore = new ConcurrentDictionary<string, StoredValue>();
 
@@ -288,7 +292,19 @@ async Task HandleClient(Socket client)
                 if (parts.Length == 1 || parts[1].ToUpper() == "REPLICATION")
                 {
                     string role = isReplica ? "slave" : "master";
-                    string info = $"role:{role}";
+                    string info;
+                    
+                    if (isReplica)
+                    {
+                        // Replica only returns role for now
+                        info = $"role:{role}";
+                    }
+                    else
+                    {
+                        // Master returns role, replication ID, and offset
+                        info = $"role:{role}\r\nmaster_replid:{replicationId}\r\nmaster_repl_offset:{replicationOffset}";
+                    }
+                    
                     response = $"${info.Length}\r\n{info}\r\n";
                 }
                 else
