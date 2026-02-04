@@ -351,6 +351,11 @@ async Task HandleClient(Socket client)
                 // For this stage, we can safely ignore the arguments and respond with OK
                 response = "+OK\r\n";
             }
+            // PSYNC - Synchronize replica with master
+            else if (command == "PSYNC" && parts.Length >= 3)
+            {
+                response = $"+FULLRESYNC {replicationId} {replicationOffset}\r\n";
+            }
             // SET and GET
             else if (command == "SET" && parts.Length >= 3)
             {
