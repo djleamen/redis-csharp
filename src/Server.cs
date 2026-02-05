@@ -45,10 +45,12 @@ var blockedClientsLock = new object();
 var blockedStreamReaders = new ConcurrentDictionary<string, Queue<BlockedStreamReader>>();
 var blockedStreamReadersLock = new object();
 
+var replicaConnections = new List<Socket>();
+var replicaConnectionsLock = new object();
+
 TcpListener server = new TcpListener(IPAddress.Any, port);
 server.Start();
 
-// If this is a replica, initiate handshake with master
 if (isReplica && masterHost != null && masterPort.HasValue)
 {
     Task.Run(() => ConnectToMaster(masterHost, masterPort.Value, port));
@@ -57,6 +59,7 @@ if (isReplica && masterHost != null && masterPort.HasValue)
 while (true)
 {
     Socket client = server.AcceptSocket();
+    client.NoDelay = true;  // Disable Nagle's algorithm
     Task.Run(() => HandleClient(client));
 }
 
@@ -192,7 +195,6 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         NetworkStream stream = masterClient.GetStream();
         byte[] buffer = new byte[1024];
         
-        // Step 1: Send PING command as RESP array
         string pingCommand = "*1\r\n$4\r\nPING\r\n";
         byte[] pingBytes = Encoding.UTF8.GetBytes(pingCommand);
         await stream.WriteAsync(pingBytes, 0, pingBytes.Length);
@@ -200,7 +202,6 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
-        // Step 2: Send REPLCONF listening-port <PORT>
         string portStr = replicaPort.ToString();
         string replconfPort = $"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${portStr.Length}\r\n{portStr}\r\n";
         byte[] replconfPortBytes = Encoding.UTF8.GetBytes(replconfPort);
@@ -209,7 +210,6 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
-        // Step 3: Send REPLCONF capa psync2
         string replconfCapa = "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
         byte[] replconfCapaBytes = Encoding.UTF8.GetBytes(replconfCapa);
         await stream.WriteAsync(replconfCapaBytes, 0, replconfCapaBytes.Length);
@@ -217,7 +217,6 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
-        // Step 4: Send PSYNC ? -1
         string psyncCommand = "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
         byte[] psyncBytes = Encoding.UTF8.GetBytes(psyncCommand);
         await stream.WriteAsync(psyncBytes, 0, psyncBytes.Length);
@@ -236,6 +235,7 @@ async Task HandleClient(Socket client)
 {
     bool inTransaction = false;
     var transactionQueue = new List<string[]>();
+    bool isReplicationConnection = false;
     
     while (true)
     {
@@ -348,26 +348,40 @@ async Task HandleClient(Socket client)
             // REPLCONF - Replication configuration (used during handshake)
             else if (command == "REPLCONF")
             {
-                // For this stage, we can safely ignore the arguments and respond with OK
                 response = "+OK\r\n";
             }
             // PSYNC - Synchronize replica with master
             else if (command == "PSYNC" && parts.Length >= 3)
             {
-                // Send FULLRESYNC response
-                response = $"+FULLRESYNC {replicationId} {replicationOffset}\r\n";
-                byte[] fullresyncBytes = Encoding.UTF8.GetBytes(response);
-                client.Send(fullresyncBytes);
-                response = string.Empty;
-
-                string emptyRdbBase64 = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXC7QhcZfoIdXNlZC1tZW3CsMAQAPo4YW9mLWJhc2XAAP/wbjv+wP9aog==";
-                byte[] emptyRdbFile = Convert.FromBase64String(emptyRdbBase64);
+                Console.WriteLine("[PSYNC] Starting RDB transfer...");
                 
+                string fullresyncResponse = $"+FULLRESYNC {replicationId} {replicationOffset}\r\n";
+                byte[] fullresyncBytes = Encoding.UTF8.GetBytes(fullresyncResponse);
+                
+                string emptyRdbBase64 = "UkVESVMwMDA5/2NhMOXkSGD0";
+                byte[] emptyRdbFile = Convert.FromBase64String(emptyRdbBase64);
                 string rdbHeader = $"${emptyRdbFile.Length}\r\n";
                 byte[] rdbHeaderBytes = Encoding.UTF8.GetBytes(rdbHeader);
+                byte[] responseData = new byte[
+                    fullresyncBytes.Length +
+                    rdbHeaderBytes.Length +
+                    emptyRdbFile.Length
+                ];
                 
-                client.Send(rdbHeaderBytes);
-                client.Send(emptyRdbFile);
+                Array.Copy(fullresyncBytes, 0, responseData, 0, fullresyncBytes.Length);
+                Array.Copy(rdbHeaderBytes, 0, responseData, fullresyncBytes.Length, rdbHeaderBytes.Length);
+                Array.Copy(emptyRdbFile, 0, responseData, fullresyncBytes.Length + rdbHeaderBytes.Length, emptyRdbFile.Length);
+                
+                client.Send(responseData);
+                Console.WriteLine($"[PSYNC] Sent {responseData.Length} bytes.");
+
+                // Mark this connection as a replica
+                lock (replicaConnectionsLock)
+                {
+                    replicaConnections.Add(client);
+                }
+                isReplicationConnection = true;
+                response = string.Empty;
             }
             // SET and GET
             else if (command == "SET" && parts.Length >= 3)
@@ -399,6 +413,12 @@ async Task HandleClient(Socket client)
                 
                 dataStore[key] = new StoredValue(value, expiryMs);
                 response = "+OK\r\n";
+                
+                // Propagate to replicas
+                if (!isReplicationConnection)
+                {
+                    PropagateToReplicas(input);
+                }
             }
             else if (command == "GET" && parts.Length > 1)
             {
@@ -422,7 +442,7 @@ async Task HandleClient(Socket client)
                 }
                 else
                 {
-                    response = "$-1\r\n"; // Null bulk string
+                    response = "$-1\r\n";
                 }
             }
             // INCR - Increment the value of a key by 1
@@ -1274,7 +1294,7 @@ async Task HandleClient(Socket client)
                 response = "-ERR unknown command\r\n";
             }
             
-            if (!string.IsNullOrEmpty(response))
+            if (!string.IsNullOrEmpty(response) && !isReplicationConnection)
             {
                 byte[] responseBytes = Encoding.UTF8.GetBytes(response);
                 client.Send(responseBytes);
@@ -1287,6 +1307,35 @@ async Task HandleClient(Socket client)
     }
     
     client.Close();
+}
+
+/* Propagate command to all connected replicas */
+void PropagateToReplicas(string command)
+{
+    byte[] commandBytes = Encoding.UTF8.GetBytes(command);
+    
+    lock (replicaConnectionsLock)
+    {
+        var disconnectedReplicas = new List<Socket>();
+        
+        foreach (var replica in replicaConnections)
+        {
+            try
+            {
+                replica.Send(commandBytes);
+            }
+            catch
+            {
+                disconnectedReplicas.Add(replica);
+            }
+        }
+        
+        // Remove disconnected replicas
+        foreach (var replica in disconnectedReplicas)
+        {
+            replicaConnections.Remove(replica);
+        }
+    }
 }
 
 /* Unblock waiting clients for a given key */
