@@ -49,6 +49,7 @@ var replicaConnections = new List<Socket>();
 var replicaConnectionsLock = new object();
 
 long replicaOffset = 0;
+long masterOffset = 0;
 
 TcpListener server = new TcpListener(IPAddress.Any, port);
 server.Start();
@@ -754,12 +755,48 @@ async Task HandleClient(Socket client)
                 }
                 else
                 {
-                    int connectedReplicas;
+                    List<Socket> replicas;
+                    long currentOffset;
                     lock (replicaConnectionsLock)
                     {
-                        connectedReplicas = replicaConnections.Count;
+                        replicas = new List<Socket>(replicaConnections);
+                        currentOffset = masterOffset;
                     }
-                    response = $":{connectedReplicas}\r\n";
+                    
+                    if (replicas.Count == 0)
+                    {
+                        response = ":0\r\n";
+                    }
+                    else if (currentOffset == 0)
+                    {
+                        response = $":{replicas.Count}\r\n";
+                    }
+                    else
+                    {
+                        string getackCmd = "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n";
+                        byte[] getackBytes = Encoding.UTF8.GetBytes(getackCmd);
+                        
+                        var ackTasks = new List<Task<long?>>();
+                        foreach (var replica in replicas)
+                        {
+                            ackTasks.Add(GetReplicaAck(replica, getackBytes));
+                        }
+                        
+                        Task allAcks = Task.WhenAll(ackTasks);
+                        Task delayTask = Task.Delay(timeout);
+                        await Task.WhenAny(allAcks, delayTask);
+                        
+                        int ackedReplicas = 0;
+                        foreach (var task in ackTasks)
+                        {
+                            if (task.IsCompleted && task.Result.HasValue && task.Result.Value >= currentOffset)
+                            {
+                                ackedReplicas++;
+                            }
+                        }
+                        
+                        response = $":{ackedReplicas}\r\n";
+                    }
                 }
             }
             // RPUSH - Append elements to a list
@@ -1614,7 +1651,57 @@ void PropagateToReplicas(string command)
         {
             replicaConnections.Remove(replica);
         }
+        
+        // Update master offset
+        if (replicaConnections.Count > 0)
+        {
+            masterOffset += commandBytes.Length;
+        }
     }
+}
+
+/* Get ACK from a replica with its current offset */
+async Task<long?> GetReplicaAck(Socket replica, byte[] getackBytes)
+{
+    try
+    {
+        // Send GETACK command
+        replica.Send(getackBytes);
+        
+        // Read response with timeout
+        byte[] buffer = new byte[1024];
+        var receiveTask = Task.Run(() =>
+        {
+            int bytesRead = replica.Receive(buffer);
+            return bytesRead;
+        });
+        
+        // Wait up to 1 second for response
+        if (await Task.WhenAny(receiveTask, Task.Delay(1000)) == receiveTask)
+        {
+            int bytesRead = receiveTask.Result;
+            if (bytesRead > 0)
+            {
+                string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                string[] responseParts = ParseRespArray(response);
+                
+                // Response should be [\"REPLCONF\", \"ACK\", \"<offset>\"]
+                if (responseParts.Length >= 3 && 
+                    responseParts[0].ToUpper() == \"REPLCONF\" && 
+                    responseParts[1].ToUpper() == \"ACK\" &&
+                    long.TryParse(responseParts[2], out long offset))
+                {
+                    return offset;
+                }
+            }
+        }
+    }
+    catch
+    {
+        // Replica might be disconnected
+    }
+    
+    return null;
 }
 
 /* Unblock waiting clients for a given key */
