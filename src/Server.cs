@@ -228,10 +228,8 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         // Step 5: Receive FULLRESYNC and RDB file
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         
-        // Parse the FULLRESYNC response and RDB file
         string fullResponse = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
-        // Find the end of FULLRESYNC line
         int fullresyncEnd = fullResponse.IndexOf("\r\n");
         if (fullresyncEnd == -1)
         {
@@ -239,7 +237,6 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
             return;
         }
         
-        // Parse RDB length
         int rdbStart = fullresyncEnd + 2;
         if (rdbStart >= fullResponse.Length || fullResponse[rdbStart] != '$')
         {
@@ -261,11 +258,9 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
             return;
         }
         
-        // Calculate where RDB data starts and ends (in bytes)
         int rdbDataStartInBytes = Encoding.UTF8.GetByteCount(fullResponse.Substring(0, rdbLenEnd)) + 2;
         int rdbDataEndInBytes = rdbDataStartInBytes + rdbLength;
         
-        // Check if we need to read more data to get the complete RDB file
         while (bytesRead < rdbDataEndInBytes)
         {
             int additionalBytesRead = await stream.ReadAsync(buffer, bytesRead, buffer.Length - bytesRead);
@@ -280,7 +275,6 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         Console.WriteLine($"[Replica] Handshake complete. RDB file received ({rdbLength} bytes). Now processing commands from master...");
         
         // Step 6: Continue processing commands propagated from master
-        // Initialize command buffer with any leftover data after RDB file
         var commandBuffer = new StringBuilder();
         if (bytesRead > rdbDataEndInBytes)
         {
@@ -294,11 +288,10 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
             Console.WriteLine($"[Replica] No leftover data after RDB (bytesRead={bytesRead}, rdbDataEndInBytes={rdbDataEndInBytes})");
         }
         
-        // Process any leftover data immediately
         if (commandBuffer.Length > 0)
         {
             Console.WriteLine($"[Replica] Processing initial buffer with {commandBuffer.Length} characters");
-            await ProcessBufferedCommands(commandBuffer);
+            await ProcessBufferedCommands(commandBuffer, stream);
         }
         
         while (true)
@@ -314,8 +307,7 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
             commandBuffer.Append(data);
             Console.WriteLine($"[Replica] Received {bytesRead} bytes");
             
-            // Process all complete commands in the buffer
-            await ProcessBufferedCommands(commandBuffer);
+            await ProcessBufferedCommands(commandBuffer, stream);
         }
     }
     catch (Exception ex)
@@ -326,7 +318,7 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
 }
 
 /* Process all complete commands from the buffer */
-async Task ProcessBufferedCommands(StringBuilder commandBuffer)
+async Task ProcessBufferedCommands(StringBuilder commandBuffer, NetworkStream stream)
 {
     string bufferedData = commandBuffer.ToString();
     int processedLength = 0;
@@ -356,8 +348,8 @@ async Task ProcessBufferedCommands(StringBuilder commandBuffer)
             break;
         }
         
-        // Process the command without sending a response
-        await ProcessReplicatedCommand(command);
+        // Process the command (may send response for REPLCONF GETACK)
+        await ProcessReplicatedCommand(command, stream);
         
         processedLength += commandLength;
     }
@@ -428,8 +420,8 @@ async Task ProcessBufferedCommands(StringBuilder commandBuffer)
     return (parts.ToArray(), bytesConsumed);
 }
 
-/* Process a command replicated from master without sending response */
-async Task ProcessReplicatedCommand(string[] parts)
+/* Process a command replicated from master */
+async Task ProcessReplicatedCommand(string[] parts, NetworkStream stream)
 {
     if (parts.Length == 0)
         return;
@@ -437,6 +429,21 @@ async Task ProcessReplicatedCommand(string[] parts)
     string command = parts[0].ToUpper();
     
     Console.WriteLine($"[Replica] Processing replicated command: {command}");
+    
+    // Handle REPLCONF GETACK - should respond with ACK
+    if (command == "REPLCONF" && parts.Length >= 3)
+    {
+        string subCommand = parts[1].ToUpper();
+        if (subCommand == "GETACK")
+        {
+            // Respond with REPLCONF ACK 0 (hardcoded offset for now)
+            string ackResponse = "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n";
+            byte[] ackBytes = Encoding.UTF8.GetBytes(ackResponse);
+            await stream.WriteAsync(ackBytes, 0, ackBytes.Length);
+            Console.WriteLine($"[Replica] Sent ACK response");
+            return;
+        }
+    }
     
     // Process write commands that modify state
     if (command == "SET" && parts.Length >= 3)
