@@ -1672,13 +1672,13 @@ async Task<long?> GetReplicaAck(Socket replica, byte[] getackBytes)
     {
         try
         {
-            Console.WriteLine($"[GetReplicaAck] Sending GETACK to replica {replica.RemoteEndPoint}");
+            Console.WriteLine($"[GetReplicaAck] Sending GETACK to replica {replica.RemoteEndPoint}, Connected={replica.Connected}, Available={replica.Available}");
             int oldTimeout = replica.ReceiveTimeout;
             replica.ReceiveTimeout = 1000;
             try
             {
-                replica.Send(getackBytes);
-                Console.WriteLine($"[GetReplicaAck] GETACK sent, waiting for ACK response...");
+                int bytesSent = replica.Send(getackBytes);
+                Console.WriteLine($"[GetReplicaAck] Sent {bytesSent}/{getackBytes.Length} bytes, waiting for ACK response...");
                 byte[] buffer = new byte[1024];
                 int bytesRead = replica.Receive(buffer);
                 Console.WriteLine($"[GetReplicaAck] Received {bytesRead} bytes");
