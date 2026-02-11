@@ -1672,25 +1672,32 @@ async Task<long?> GetReplicaAck(Socket replica, byte[] getackBytes)
     {
         try
         {
+            Console.WriteLine($"[GetReplicaAck] Sending GETACK to replica {replica.RemoteEndPoint}");
             int oldTimeout = replica.ReceiveTimeout;
             replica.ReceiveTimeout = 1000;
             try
             {
                 replica.Send(getackBytes);
+                Console.WriteLine($"[GetReplicaAck] GETACK sent, waiting for ACK response...");
                 byte[] buffer = new byte[1024];
                 int bytesRead = replica.Receive(buffer);
+                Console.WriteLine($"[GetReplicaAck] Received {bytesRead} bytes");
                 
                 if (bytesRead > 0)
                 {
                     string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    Console.WriteLine($"[GetReplicaAck] Response: {response.Replace("\r", "\\r").Replace("\n", "\\n")}");
                     string[] responseParts = ParseRespArray(response);
+                    Console.WriteLine($"[GetReplicaAck] Parsed parts: [{string.Join(", ", responseParts)}]");
                     if (responseParts.Length >= 3 && 
                         responseParts[0].ToUpper() == "REPLCONF" && 
                         responseParts[1].ToUpper() == "ACK" &&
                         long.TryParse(responseParts[2], out long offset))
                     {
+                        Console.WriteLine($"[GetReplicaAck] Successfully parsed ACK with offset {offset}");
                         return offset;
                     }
+                    Console.WriteLine($"[GetReplicaAck] Failed to parse ACK response");
                 }
             }
             finally
@@ -1698,11 +1705,12 @@ async Task<long?> GetReplicaAck(Socket replica, byte[] getackBytes)
                 replica.ReceiveTimeout = oldTimeout;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Replica might be disconnected or timeout occurred
+            Console.WriteLine($"[GetReplicaAck] Exception: {ex.GetType().Name} - {ex.Message}");
         }
         
+        Console.WriteLine($"[GetReplicaAck] Returning null");
         return (long?)null;
     });
 }
