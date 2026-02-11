@@ -1685,10 +1685,10 @@ async Task<long?> GetReplicaAck(Socket replica, byte[] getackBytes)
                 string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
                 string[] responseParts = ParseRespArray(response);
                 
-                // Response should be [\"REPLCONF\", \"ACK\", \"<offset>\"]
+                // Response should be ["REPLCONF", "ACK", "<offset>"]
                 if (responseParts.Length >= 3 && 
-                    responseParts[0].ToUpper() == \"REPLCONF\" && 
-                    responseParts[1].ToUpper() == \"ACK\" &&
+                    responseParts[0].ToUpper() == "REPLCONF" && 
+                    responseParts[1].ToUpper() == "ACK" &&
                     long.TryParse(responseParts[2], out long offset))
                 {
                     return offset;
