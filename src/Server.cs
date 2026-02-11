@@ -227,12 +227,79 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         
         // Step 5: Receive FULLRESYNC and RDB file
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-        response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
-        Console.WriteLine("[Replica] Handshake complete. Now processing commands from master...");
+        // Parse the FULLRESYNC response and RDB file
+        string fullResponse = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+        
+        // Find the end of FULLRESYNC line
+        int fullresyncEnd = fullResponse.IndexOf("\r\n");
+        if (fullresyncEnd == -1)
+        {
+            Console.WriteLine("[Replica] Error: Invalid PSYNC response");
+            return;
+        }
+        
+        // Parse RDB length
+        int rdbStart = fullresyncEnd + 2;
+        if (rdbStart >= fullResponse.Length || fullResponse[rdbStart] != '$')
+        {
+            Console.WriteLine("[Replica] Error: Invalid RDB format");
+            return;
+        }
+        
+        int rdbLenEnd = fullResponse.IndexOf("\r\n", rdbStart);
+        if (rdbLenEnd == -1)
+        {
+            Console.WriteLine("[Replica] Error: Invalid RDB length");
+            return;
+        }
+        
+        string rdbLenStr = fullResponse.Substring(rdbStart + 1, rdbLenEnd - rdbStart - 1);
+        if (!int.TryParse(rdbLenStr, out int rdbLength))
+        {
+            Console.WriteLine("[Replica] Error: Cannot parse RDB length");
+            return;
+        }
+        
+        // Calculate where RDB data starts and ends (in bytes)
+        int rdbDataStartInBytes = Encoding.UTF8.GetByteCount(fullResponse.Substring(0, rdbLenEnd)) + 2;
+        int rdbDataEndInBytes = rdbDataStartInBytes + rdbLength;
+        
+        // Check if we need to read more data to get the complete RDB file
+        while (bytesRead < rdbDataEndInBytes)
+        {
+            int additionalBytesRead = await stream.ReadAsync(buffer, bytesRead, buffer.Length - bytesRead);
+            if (additionalBytesRead == 0)
+            {
+                Console.WriteLine("[Replica] Error: Connection closed while reading RDB");
+                return;
+            }
+            bytesRead += additionalBytesRead;
+        }
+        
+        Console.WriteLine($"[Replica] Handshake complete. RDB file received ({rdbLength} bytes). Now processing commands from master...");
         
         // Step 6: Continue processing commands propagated from master
+        // Initialize command buffer with any leftover data after RDB file
         var commandBuffer = new StringBuilder();
+        if (bytesRead > rdbDataEndInBytes)
+        {
+            string leftoverData = Encoding.UTF8.GetString(buffer, rdbDataEndInBytes, bytesRead - rdbDataEndInBytes);
+            commandBuffer.Append(leftoverData);
+            Console.WriteLine($"[Replica] Found {bytesRead - rdbDataEndInBytes} bytes of command data after RDB");
+            Console.WriteLine($"[Replica] Leftover data (first 100 chars): {leftoverData.Substring(0, Math.Min(100, leftoverData.Length))}");
+        }
+        else
+        {
+            Console.WriteLine($"[Replica] No leftover data after RDB (bytesRead={bytesRead}, rdbDataEndInBytes={rdbDataEndInBytes})");
+        }
+        
+        // Process any leftover data immediately
+        if (commandBuffer.Length > 0)
+        {
+            Console.WriteLine($"[Replica] Processing initial buffer with {commandBuffer.Length} characters");
+            await ProcessBufferedCommands(commandBuffer);
+        }
         
         while (true)
         {
@@ -242,35 +309,64 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
                 Console.WriteLine("[Replica] Master connection closed.");
                 break;
             }
+            
             string data = Encoding.UTF8.GetString(buffer, 0, bytesRead);
             commandBuffer.Append(data);
-            string bufferedData = commandBuffer.ToString();
-            int processedLength = 0;
-
-            while (true)
-            {
-                string remainingData = bufferedData.Substring(processedLength);
-                var (command, commandLength) = TryParseRespCommand(remainingData);
-                
-                if (command == null || commandLength == 0)
-                {
-                    break;
-                }
-                
-                await ProcessReplicatedCommand(command);
-                
-                processedLength += commandLength;
-            }
+            Console.WriteLine($"[Replica] Received {bytesRead} bytes");
             
-            if (processedLength > 0)
-            {
-                commandBuffer.Remove(0, processedLength);
-            }
+            // Process all complete commands in the buffer
+            await ProcessBufferedCommands(commandBuffer);
         }
     }
     catch (Exception ex)
     {
         Console.WriteLine($"[Replica] Error in master connection: {ex.Message}");
+        Console.WriteLine($"[Replica] Stack trace: {ex.StackTrace}");
+    }
+}
+
+/* Process all complete commands from the buffer */
+async Task ProcessBufferedCommands(StringBuilder commandBuffer)
+{
+    string bufferedData = commandBuffer.ToString();
+    int processedLength = 0;
+    
+    Console.WriteLine($"[Replica] ProcessBufferedCommands: buffer length = {bufferedData.Length}");
+    if (bufferedData.Length > 0)
+    {
+        Console.WriteLine($"[Replica] Buffer content (first 200 chars): {bufferedData.Substring(0, Math.Min(200, bufferedData.Length)).Replace("\r", "\\r").Replace("\n", "\\n")}");
+    }
+    
+    while (true)
+    {
+        string remainingData = bufferedData.Substring(processedLength);
+        
+        if (remainingData.Length == 0)
+        {
+            break;
+        }
+        
+        // Try to parse a complete RESP array command
+        var (command, commandLength) = TryParseRespCommand(remainingData);
+        
+        if (command == null || commandLength == 0)
+        {
+            // No complete command available, wait for more data
+            Console.WriteLine($"[Replica] No complete command found, remaining {remainingData.Length} chars in buffer");
+            break;
+        }
+        
+        // Process the command without sending a response
+        await ProcessReplicatedCommand(command);
+        
+        processedLength += commandLength;
+    }
+    
+    // Remove processed data from buffer
+    if (processedLength > 0)
+    {
+        Console.WriteLine($"[Replica] Removing {processedLength} characters from buffer");
+        commandBuffer.Remove(0, processedLength);
     }
 }
 
@@ -313,15 +409,22 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         
         string value = lines[lineIndex];
         
-        // Verify the value length matches
+        // Verify the value length matches (important for incomplete data)
         if (value.Length != bulkLength)
-            return (null, 0);
+        {
+            // Check if this is the last line and might be incomplete
+            if (lineIndex == lines.Length - 1 || (lineIndex == lines.Length - 2 && lines[lineIndex + 1] == ""))
+            {
+                return (null, 0); // Incomplete data
+            }
+        }
         
         parts.Add(value);
         bytesConsumed += value.Length + 2; // +2 for \r\n
         lineIndex++;
     }
     
+    Console.WriteLine($"[Replica] Parsed command: [{string.Join(", ", parts)}]");
     return (parts.ToArray(), bytesConsumed);
 }
 
