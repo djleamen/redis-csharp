@@ -443,6 +443,7 @@ async Task ProcessReplicatedCommand(string[] parts, NetworkStream stream, int co
             string ackResponse = $"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${offsetStr.Length}\r\n{offsetStr}\r\n";
             byte[] ackBytes = Encoding.UTF8.GetBytes(ackResponse);
             await stream.WriteAsync(ackBytes, 0, ackBytes.Length);
+            await stream.FlushAsync();
             Console.WriteLine($"[Replica] Sent ACK response with offset {replicaOffset}");
             
             // GETACK is a read-only command and doesn't count towards offset
