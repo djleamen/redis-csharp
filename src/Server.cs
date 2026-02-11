@@ -193,8 +193,9 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         await masterClient.ConnectAsync(host, masterPort);
         
         NetworkStream stream = masterClient.GetStream();
-        byte[] buffer = new byte[1024];
+        byte[] buffer = new byte[4096];
         
+        // Step 1: Send PING
         string pingCommand = "*1\r\n$4\r\nPING\r\n";
         byte[] pingBytes = Encoding.UTF8.GetBytes(pingCommand);
         await stream.WriteAsync(pingBytes, 0, pingBytes.Length);
@@ -202,6 +203,7 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
+        // Step 2: Send REPLCONF listening-port
         string portStr = replicaPort.ToString();
         string replconfPort = $"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${portStr.Length}\r\n{portStr}\r\n";
         byte[] replconfPortBytes = Encoding.UTF8.GetBytes(replconfPort);
@@ -210,6 +212,7 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
+        // Step 3: Send REPLCONF capa
         string replconfCapa = "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
         byte[] replconfCapaBytes = Encoding.UTF8.GetBytes(replconfCapa);
         await stream.WriteAsync(replconfCapaBytes, 0, replconfCapaBytes.Length);
@@ -217,17 +220,153 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         
+        // Step 4: Send PSYNC
         string psyncCommand = "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
         byte[] psyncBytes = Encoding.UTF8.GetBytes(psyncCommand);
         await stream.WriteAsync(psyncBytes, 0, psyncBytes.Length);
         
+        // Step 5: Receive FULLRESYNC and RDB file
         bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
         response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+        
+        Console.WriteLine("[Replica] Handshake complete. Now processing commands from master...");
+        
+        // Step 6: Continue processing commands propagated from master
+        var commandBuffer = new StringBuilder();
+        
+        while (true)
+        {
+            bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+            if (bytesRead == 0)
+            {
+                Console.WriteLine("[Replica] Master connection closed.");
+                break;
+            }
+            string data = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+            commandBuffer.Append(data);
+            string bufferedData = commandBuffer.ToString();
+            int processedLength = 0;
+
+            while (true)
+            {
+                string remainingData = bufferedData.Substring(processedLength);
+                var (command, commandLength) = TryParseRespCommand(remainingData);
+                
+                if (command == null || commandLength == 0)
+                {
+                    break;
+                }
+                
+                await ProcessReplicatedCommand(command);
+                
+                processedLength += commandLength;
+            }
+            
+            if (processedLength > 0)
+            {
+                commandBuffer.Remove(0, processedLength);
+            }
+        }
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Error connecting to master: {ex.Message}");
+        Console.WriteLine($"[Replica] Error in master connection: {ex.Message}");
     }
+}
+
+/* Try to parse a complete RESP command from buffered data */
+(string[]?, int) TryParseRespCommand(string data)
+{
+    if (string.IsNullOrEmpty(data) || !data.StartsWith('*'))
+        return (null, 0);
+    
+    var lines = data.Split(new[] { "\r\n" }, StringSplitOptions.None);
+    
+    if (lines.Length < 2)
+        return (null, 0);
+    
+    // Parse array length
+    if (!int.TryParse(lines[0].Substring(1), out int arrayLength))
+        return (null, 0);
+    
+    var parts = new List<string>();
+    int lineIndex = 1;
+    int bytesConsumed = lines[0].Length + 2; // +2 for \r\n
+    
+    for (int i = 0; i < arrayLength; i++)
+    {
+        // Check if we have enough lines for bulk string header and value
+        if (lineIndex >= lines.Length)
+            return (null, 0);
+        
+        // Parse bulk string length
+        string lengthLine = lines[lineIndex];
+        if (!lengthLine.StartsWith('$') || !int.TryParse(lengthLine.Substring(1), out int bulkLength))
+            return (null, 0);
+        
+        bytesConsumed += lengthLine.Length + 2; // +2 for \r\n
+        lineIndex++;
+        
+        // Check if we have the bulk string value
+        if (lineIndex >= lines.Length)
+            return (null, 0);
+        
+        string value = lines[lineIndex];
+        
+        // Verify the value length matches
+        if (value.Length != bulkLength)
+            return (null, 0);
+        
+        parts.Add(value);
+        bytesConsumed += value.Length + 2; // +2 for \r\n
+        lineIndex++;
+    }
+    
+    return (parts.ToArray(), bytesConsumed);
+}
+
+/* Process a command replicated from master without sending response */
+async Task ProcessReplicatedCommand(string[] parts)
+{
+    if (parts.Length == 0)
+        return;
+    
+    string command = parts[0].ToUpper();
+    
+    Console.WriteLine($"[Replica] Processing replicated command: {command}");
+    
+    // Process write commands that modify state
+    if (command == "SET" && parts.Length >= 3)
+    {
+        string key = parts[1];
+        string value = parts[2];
+        long? expiryMs = null;
+        
+        for (int i = 3; i < parts.Length - 1; i++)
+        {
+            string option = parts[i].ToUpper();
+            if (option == "PX")
+            {
+                if (long.TryParse(parts[i + 1], out long px))
+                {
+                    expiryMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + px;
+                }
+                break;
+            }
+            else if (option == "EX")
+            {
+                if (long.TryParse(parts[i + 1], out long ex))
+                {
+                    expiryMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (ex * 1000);
+                }
+                break;
+            }
+        }
+        
+        dataStore[key] = new StoredValue(value, expiryMs);
+        Console.WriteLine($"[Replica] SET {key} = {value}");
+    }
+    // Add other write commands as needed (INCR, RPUSH, LPUSH, XADD, etc.)
 }
 
 /* Handle client connection */
