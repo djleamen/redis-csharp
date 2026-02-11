@@ -741,6 +741,29 @@ async Task HandleClient(Socket client)
                     response = ":1\r\n";
                 }
             }
+            // WAIT - Wait for acknowledgements from replicas
+            else if (command == "WAIT" && parts.Length >= 3)
+            {
+                if (!int.TryParse(parts[1], out int numReplicas))
+                {
+                    response = "-ERR value is not an integer or out of range\r\n";
+                }
+                else if (!int.TryParse(parts[2], out int timeout))
+                {
+                    response = "-ERR timeout is not an integer or out of range\r\n";
+                }
+                else
+                {
+                    if (numReplicas == 0)
+                    {
+                        response = ":0\r\n";
+                    }
+                    else
+                    {
+                        response = ":0\r\n";
+                    }
+                }
+            }
             // RPUSH - Append elements to a list
             else if (command == "RPUSH" && parts.Length >= 3)
             {
