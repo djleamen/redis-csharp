@@ -1663,45 +1663,43 @@ void PropagateToReplicas(string command)
 /* Get ACK from a replica with its current offset */
 async Task<long?> GetReplicaAck(Socket replica, byte[] getackBytes)
 {
-    try
+    return await Task.Run(() =>
     {
-        // Send GETACK command
-        replica.Send(getackBytes);
-        
-        // Read response with timeout
-        byte[] buffer = new byte[1024];
-        var receiveTask = Task.Run(() =>
+        try
         {
-            int bytesRead = replica.Receive(buffer);
-            return bytesRead;
-        });
-        
-        // Wait up to 1 second for response
-        if (await Task.WhenAny(receiveTask, Task.Delay(1000)) == receiveTask)
-        {
-            int bytesRead = receiveTask.Result;
-            if (bytesRead > 0)
+            int oldTimeout = replica.ReceiveTimeout;
+            replica.ReceiveTimeout = 1000;
+            try
             {
-                string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                string[] responseParts = ParseRespArray(response);
+                replica.Send(getackBytes);
+                byte[] buffer = new byte[1024];
+                int bytesRead = replica.Receive(buffer);
                 
-                // Response should be ["REPLCONF", "ACK", "<offset>"]
-                if (responseParts.Length >= 3 && 
-                    responseParts[0].ToUpper() == "REPLCONF" && 
-                    responseParts[1].ToUpper() == "ACK" &&
-                    long.TryParse(responseParts[2], out long offset))
+                if (bytesRead > 0)
                 {
-                    return offset;
+                    string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    string[] responseParts = ParseRespArray(response);
+                    if (responseParts.Length >= 3 && 
+                        responseParts[0].ToUpper() == "REPLCONF" && 
+                        responseParts[1].ToUpper() == "ACK" &&
+                        long.TryParse(responseParts[2], out long offset))
+                    {
+                        return offset;
+                    }
                 }
             }
+            finally
+            {
+                replica.ReceiveTimeout = oldTimeout;
+            }
         }
-    }
-    catch
-    {
-        // Replica might be disconnected
-    }
-    
-    return null;
+        catch
+        {
+            // Replica might be disconnected or timeout occurred
+        }
+        
+        return (long?)null;
+    });
 }
 
 /* Unblock waiting clients for a given key */
