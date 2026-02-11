@@ -754,14 +754,12 @@ async Task HandleClient(Socket client)
                 }
                 else
                 {
-                    if (numReplicas == 0)
+                    int connectedReplicas;
+                    lock (replicaConnectionsLock)
                     {
-                        response = ":0\r\n";
+                        connectedReplicas = replicaConnections.Count;
                     }
-                    else
-                    {
-                        response = ":0\r\n";
-                    }
+                    response = $":{connectedReplicas}\r\n";
                 }
             }
             // RPUSH - Append elements to a list
