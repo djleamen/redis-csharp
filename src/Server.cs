@@ -640,7 +640,13 @@ async Task HandleClient(Socket client)
                     replicaConnections.Add(client);
                 }
                 isReplicationConnection = true;
-                response = string.Empty;
+                
+                // For replication connections, don't read from socket in this loop
+                // GETACK/ACK communication happens in WAIT command
+                while (true)
+                {
+                    Thread.Sleep(100000);  // Keep connection alive
+                }
             }
             // SET and GET
             else if (command == "SET" && parts.Length >= 3)
