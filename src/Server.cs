@@ -48,6 +48,8 @@ var blockedStreamReadersLock = new object();
 var replicaConnections = new List<Socket>();
 var replicaConnectionsLock = new object();
 
+long replicaOffset = 0;
+
 TcpListener server = new TcpListener(IPAddress.Any, port);
 server.Start();
 
@@ -349,7 +351,7 @@ async Task ProcessBufferedCommands(StringBuilder commandBuffer, NetworkStream st
         }
         
         // Process the command (may send response for REPLCONF GETACK)
-        await ProcessReplicatedCommand(command, stream);
+        await ProcessReplicatedCommand(command, stream, commandLength);
         
         processedLength += commandLength;
     }
@@ -421,7 +423,7 @@ async Task ProcessBufferedCommands(StringBuilder commandBuffer, NetworkStream st
 }
 
 /* Process a command replicated from master */
-async Task ProcessReplicatedCommand(string[] parts, NetworkStream stream)
+async Task ProcessReplicatedCommand(string[] parts, NetworkStream stream, int commandLength)
 {
     if (parts.Length == 0)
         return;
@@ -436,11 +438,14 @@ async Task ProcessReplicatedCommand(string[] parts, NetworkStream stream)
         string subCommand = parts[1].ToUpper();
         if (subCommand == "GETACK")
         {
-            // Respond with REPLCONF ACK 0 (hardcoded offset for now)
-            string ackResponse = "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n";
+            string offsetStr = replicaOffset.ToString();
+            string ackResponse = $"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${offsetStr.Length}\r\n{offsetStr}\r\n";
             byte[] ackBytes = Encoding.UTF8.GetBytes(ackResponse);
             await stream.WriteAsync(ackBytes, 0, ackBytes.Length);
-            Console.WriteLine($"[Replica] Sent ACK response");
+            Console.WriteLine($"[Replica] Sent ACK response with offset {replicaOffset}");
+            
+            replicaOffset += commandLength;
+            Console.WriteLine($"[Replica] Updated offset to {replicaOffset} after GETACK");
             return;
         }
     }
@@ -477,6 +482,10 @@ async Task ProcessReplicatedCommand(string[] parts, NetworkStream stream)
         Console.WriteLine($"[Replica] SET {key} = {value}");
     }
     // Add other write commands as needed (INCR, RPUSH, LPUSH, XADD, etc.)
+    
+    // Update offset for all non-GETACK commands
+    replicaOffset += commandLength;
+    Console.WriteLine($"[Replica] Updated offset to {replicaOffset} after {command}");
 }
 
 /* Handle client connection */
