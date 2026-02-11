@@ -431,24 +431,23 @@ async Task ProcessReplicatedCommand(string[] parts, NetworkStream stream, int co
         return;
     
     string command = parts[0].ToUpper();
+    long offsetBeforeCommand = replicaOffset;
     
     Console.WriteLine($"[Replica] Processing replicated command: {command}");
     
-    // Handle REPLCONF GETACK - should respond with ACK (read-only, doesn't update offset)
+    // Handle REPLCONF GETACK - respond with the offset before processing this GETACK.
+    // Redis includes this GETACK in the stream offset only after replying.
     if (command == "REPLCONF" && parts.Length >= 3)
     {
         string subCommand = parts[1].ToUpper();
         if (subCommand == "GETACK")
         {
-            string offsetStr = replicaOffset.ToString();
+            string offsetStr = offsetBeforeCommand.ToString();
             string ackResponse = $"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${offsetStr.Length}\r\n{offsetStr}\r\n";
             byte[] ackBytes = Encoding.UTF8.GetBytes(ackResponse);
             await stream.WriteAsync(ackBytes, 0, ackBytes.Length);
             await stream.FlushAsync();
-            Console.WriteLine($"[Replica] Sent ACK response with offset {replicaOffset}");
-            
-            // GETACK is a read-only command and doesn't count towards offset
-            return;
+            Console.WriteLine($"[Replica] Sent ACK response with offset {offsetBeforeCommand}");
         }
     }
     
@@ -485,9 +484,10 @@ async Task ProcessReplicatedCommand(string[] parts, NetworkStream stream, int co
     }
     // Add other write commands as needed (INCR, RPUSH, LPUSH, XADD, etc.)
     
-    // Update offset for all non-GETACK commands
+    // Every command from the master replication stream advances the replica offset,
+    // including REPLCONF GETACK.
     replicaOffset += commandLength;
-    Console.WriteLine($"[Replica] Updated offset to {replicaOffset} after {command}");
+    Console.WriteLine($"[Replica] Updated offset from {offsetBeforeCommand} to {replicaOffset} after {command} ({commandLength} bytes)");
 }
 
 /* Handle client connection */
