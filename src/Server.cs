@@ -47,6 +47,7 @@ var blockedStreamReadersLock = new object();
 
 var replicaConnections = new List<Socket>();
 var replicaConnectionsLock = new object();
+var replicaAckOffsets = new Dictionary<Socket, long>();
 
 long replicaOffset = 0;
 long masterOffset = 0;
@@ -607,7 +608,24 @@ async Task HandleClient(Socket client)
             // REPLCONF - Replication configuration (used during handshake)
             else if (command == "REPLCONF")
             {
-                response = "+OK\r\n";
+                if (parts.Length >= 3 && parts[1].ToUpper() == "ACK")
+                {
+                    if (long.TryParse(parts[2], out long ackOffset))
+                    {
+                        lock (replicaConnectionsLock)
+                        {
+                            if (replicaConnections.Contains(client))
+                            {
+                                replicaAckOffsets[client] = ackOffset;
+                            }
+                        }
+                    }
+                    response = string.Empty;
+                }
+                else
+                {
+                    response = "+OK\r\n";
+                }
             }
             // PSYNC - Synchronize replica with master
             else if (command == "PSYNC" && parts.Length >= 3)
@@ -638,14 +656,10 @@ async Task HandleClient(Socket client)
                 lock (replicaConnectionsLock)
                 {
                     replicaConnections.Add(client);
+                    replicaAckOffsets[client] = 0;
                 }
                 isReplicationConnection = true;
-                
-                // GETACK/ACK communication happens in WAIT command
-                while (true)
-                {
-                    Thread.Sleep(100000);  // Keep connection alive
-                }
+                continue;
             }
             // SET and GET
             else if (command == "SET" && parts.Length >= 3)
@@ -778,28 +792,28 @@ async Task HandleClient(Socket client)
                     }
                     else
                     {
-                        string getackCmd = "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n";
-                        byte[] getackBytes = Encoding.UTF8.GetBytes(getackCmd);
-                        
-                        var ackTasks = new List<Task<long?>>();
-                        foreach (var replica in replicas)
-                        {
-                            ackTasks.Add(GetReplicaAck(replica, getackBytes));
-                        }
-                        
-                        Task allAcks = Task.WhenAll(ackTasks);
-                        Task delayTask = Task.Delay(timeout);
-                        await Task.WhenAny(allAcks, delayTask);
-                        
+                        RequestReplicaAcks(replicas);
+                        long deadline = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + timeout;
                         int ackedReplicas = 0;
-                        foreach (var task in ackTasks)
+
+                        while (true)
                         {
-                            if (task.IsCompleted && task.Result.HasValue && task.Result.Value >= currentOffset)
+                            lock (replicaConnectionsLock)
                             {
-                                ackedReplicas++;
+                                ackedReplicas = replicas.Count(replica =>
+                                    replicaAckOffsets.TryGetValue(replica, out long ackOffset) &&
+                                    ackOffset >= currentOffset);
                             }
+
+                            if (ackedReplicas >= numReplicas ||
+                                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() >= deadline)
+                            {
+                                break;
+                            }
+
+                            await Task.Delay(10);
                         }
-                        
+
                         response = $":{ackedReplicas}\r\n";
                     }
                 }
@@ -1627,6 +1641,11 @@ async Task HandleClient(Socket client)
         }
     }
     
+    lock (replicaConnectionsLock)
+    {
+        replicaConnections.Remove(client);
+        replicaAckOffsets.Remove(client);
+    }
     client.Close();
 }
 
@@ -1655,6 +1674,7 @@ void PropagateToReplicas(string command)
         foreach (var replica in disconnectedReplicas)
         {
             replicaConnections.Remove(replica);
+            replicaAckOffsets.Remove(replica);
         }
         
         // Update master offset
@@ -1665,54 +1685,34 @@ void PropagateToReplicas(string command)
     }
 }
 
-/* Get ACK from a replica with its current offset */
-async Task<long?> GetReplicaAck(Socket replica, byte[] getackBytes)
+/* Request ACKs from connected replicas */
+void RequestReplicaAcks(IEnumerable<Socket> replicas)
 {
-    return await Task.Run(() =>
+    string getackCmd = "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n";
+    byte[] getackBytes = Encoding.UTF8.GetBytes(getackCmd);
+
+    lock (replicaConnectionsLock)
     {
-        try
+        var disconnectedReplicas = new List<Socket>();
+
+        foreach (var replica in replicas)
         {
-            Console.WriteLine($"[GetReplicaAck] Sending GETACK to replica {replica.RemoteEndPoint}, Connected={replica.Connected}, Available={replica.Available}");
-            int oldTimeout = replica.ReceiveTimeout;
-            replica.ReceiveTimeout = 1000;
             try
             {
-                int bytesSent = replica.Send(getackBytes);
-                Console.WriteLine($"[GetReplicaAck] Sent {bytesSent}/{getackBytes.Length} bytes, waiting for ACK response...");
-                byte[] buffer = new byte[1024];
-                int bytesRead = replica.Receive(buffer);
-                Console.WriteLine($"[GetReplicaAck] Received {bytesRead} bytes");
-                
-                if (bytesRead > 0)
-                {
-                    string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    Console.WriteLine($"[GetReplicaAck] Response: {response.Replace("\r", "\\r").Replace("\n", "\\n")}");
-                    string[] responseParts = ParseRespArray(response);
-                    Console.WriteLine($"[GetReplicaAck] Parsed parts: [{string.Join(", ", responseParts)}]");
-                    if (responseParts.Length >= 3 && 
-                        responseParts[0].ToUpper() == "REPLCONF" && 
-                        responseParts[1].ToUpper() == "ACK" &&
-                        long.TryParse(responseParts[2], out long offset))
-                    {
-                        Console.WriteLine($"[GetReplicaAck] Successfully parsed ACK with offset {offset}");
-                        return offset;
-                    }
-                    Console.WriteLine($"[GetReplicaAck] Failed to parse ACK response");
-                }
+                replica.Send(getackBytes);
             }
-            finally
+            catch
             {
-                replica.ReceiveTimeout = oldTimeout;
+                disconnectedReplicas.Add(replica);
             }
         }
-        catch (Exception ex)
+
+        foreach (var replica in disconnectedReplicas)
         {
-            Console.WriteLine($"[GetReplicaAck] Exception: {ex.GetType().Name} - {ex.Message}");
+            replicaConnections.Remove(replica);
+            replicaAckOffsets.Remove(replica);
         }
-        
-        Console.WriteLine($"[GetReplicaAck] Returning null");
-        return (long?)null;
-    });
+    }
 }
 
 /* Unblock waiting clients for a given key */
