@@ -641,7 +641,6 @@ async Task HandleClient(Socket client)
                 }
                 isReplicationConnection = true;
                 
-                // For replication connections, don't read from socket in this loop
                 // GETACK/ACK communication happens in WAIT command
                 while (true)
                 {
