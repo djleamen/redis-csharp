@@ -433,7 +433,7 @@ async Task ProcessReplicatedCommand(string[] parts, NetworkStream stream, int co
     
     Console.WriteLine($"[Replica] Processing replicated command: {command}");
     
-    // Handle REPLCONF GETACK - should respond with ACK
+    // Handle REPLCONF GETACK - should respond with ACK (read-only, doesn't update offset)
     if (command == "REPLCONF" && parts.Length >= 3)
     {
         string subCommand = parts[1].ToUpper();
@@ -445,8 +445,7 @@ async Task ProcessReplicatedCommand(string[] parts, NetworkStream stream, int co
             await stream.WriteAsync(ackBytes, 0, ackBytes.Length);
             Console.WriteLine($"[Replica] Sent ACK response with offset {replicaOffset}");
             
-            replicaOffset += commandLength;
-            Console.WriteLine($"[Replica] Updated offset to {replicaOffset} after GETACK");
+            // GETACK is a read-only command and doesn't count towards offset
             return;
         }
     }
