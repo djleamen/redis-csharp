@@ -11,6 +11,8 @@ using System.Text;
 int port = 6379; // Default port
 string? masterHost = null;
 int? masterPort = null;
+string dir = "/tmp/redis-files"; // Default directory for RDB file
+string dbfilename = "dump.rdb"; // Default RDB filename
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -29,6 +31,14 @@ for (int i = 0; i < args.Length; i++)
             masterHost = parts[0];
             masterPort = parsedMasterPort;
         }
+    }
+    else if (args[i] == "--dir" && i + 1 < args.Length)
+    {
+        dir = args[i + 1];
+    }
+    else if (args[i] == "--dbfilename" && i + 1 < args.Length)
+    {
+        dbfilename = args[i + 1];
     }
 }
 
@@ -603,6 +613,30 @@ async Task HandleClient(Socket client)
                 else
                 {
                     response = "$0\r\n\r\n";
+                }
+            }
+            // CONFIG GET - Get configuration parameter value
+            else if (command == "CONFIG" && parts.Length >= 3 && parts[1].ToUpper() == "GET")
+            {
+                string parameter = parts[2].ToLower();
+                string? value = null;
+                
+                if (parameter == "dir")
+                {
+                    value = dir;
+                }
+                else if (parameter == "dbfilename")
+                {
+                    value = dbfilename;
+                }
+                
+                if (value != null)
+                {
+                    response = $"*2\r\n${parameter.Length}\r\n{parameter}\r\n${value.Length}\r\n{value}\r\n";
+                }
+                else
+                {
+                    response = "*0\r\n";
                 }
             }
             // REPLCONF - Replication configuration (used during handshake)
