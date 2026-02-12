@@ -62,6 +62,9 @@ var replicaAckOffsets = new Dictionary<Socket, long>();
 long replicaOffset = 0;
 long masterOffset = 0;
 
+// Load RDB file if it exists
+LoadRdbFile(Path.Combine(dir, dbfilename));
+
 TcpListener server = new TcpListener(IPAddress.Any, port);
 server.Start();
 
@@ -638,6 +641,37 @@ async Task HandleClient(Socket client)
                 {
                     response = "*0\r\n";
                 }
+            }
+            // KEYS - Get all keys matching a pattern
+            else if (command == "KEYS" && parts.Length >= 2)
+            {
+                string pattern = parts[1];
+                var matchingKeys = new List<string>();
+                
+                foreach (var key in dataStore.Keys)
+                {
+                    // Simple pattern matching - only "*" wildcard supported for now
+                    if (pattern == "*" || key == pattern)
+                    {
+                        // Check if key has expired
+                        if (dataStore.TryGetValue(key, out StoredValue? storedValue))
+                        {
+                            if (!storedValue.ExpiryMs.HasValue ||
+                                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() <= storedValue.ExpiryMs.Value)
+                            {
+                                matchingKeys.Add(key);
+                            }
+                        }
+                    }
+                }
+                
+                var sb = new StringBuilder();
+                sb.Append($"*{matchingKeys.Count}\r\n");
+                foreach (var key in matchingKeys)
+                {
+                    sb.Append($"${key.Length}\r\n{key}\r\n");
+                }
+                response = sb.ToString();
             }
             // REPLCONF - Replication configuration (used during handshake)
             else if (command == "REPLCONF")
@@ -1900,6 +1934,214 @@ void UnblockWaitingStreamReaders(string key)
             }
         }
     }
+}
+
+/* Load RDB file and populate dataStore */
+void LoadRdbFile(string filePath)
+{
+    if (!File.Exists(filePath))
+    {
+        Console.WriteLine($"[RDB] File not found: {filePath}");
+        return;
+    }
+    
+    try
+    {
+        byte[] fileBytes = File.ReadAllBytes(filePath);
+        int offset = 0;
+        
+        // Read magic string "REDIS"
+        string magic = Encoding.ASCII.GetString(fileBytes, offset, 5);
+        offset += 5;
+        
+        if (magic != "REDIS")
+        {
+            Console.WriteLine("[RDB] Invalid RDB file format");
+            return;
+        }
+        
+        // Read RDB version (4 bytes)
+        string version = Encoding.ASCII.GetString(fileBytes, offset, 4);
+        offset += 4;
+        Console.WriteLine($"[RDB] Loading RDB version {version}");
+        
+        // Parse the rest of the file
+        while (offset < fileBytes.Length)
+        {
+            byte opcode = fileBytes[offset];
+            offset++;
+            
+            if (opcode == 0xFF)
+            {
+                // End of RDB file
+                Console.WriteLine("[RDB] Reached end of file");
+                break;
+            }
+            else if (opcode == 0xFE)
+            {
+                // Database selector
+                var (dbNumber, bytesRead) = ReadLength(fileBytes, offset);
+                offset += bytesRead;
+                Console.WriteLine($"[RDB] Selecting database {dbNumber}");
+            }
+            else if (opcode == 0xFD)
+            {
+                // Expiry time in seconds
+                uint expirySeconds = BitConverter.ToUInt32(fileBytes, offset);
+                offset += 4;
+                long expiryMs = expirySeconds * 1000L;
+                
+                // Read value type and key-value pair
+                byte valueType = fileBytes[offset];
+                offset++;
+                
+                var (key, keyBytesRead) = ReadString(fileBytes, offset);
+                offset += keyBytesRead;
+                
+                var (value, valueBytesRead) = ReadString(fileBytes, offset);
+                offset += valueBytesRead;
+                
+                dataStore[key] = new StoredValue(value, expiryMs);
+                Console.WriteLine($"[RDB] Loaded key '{key}' with expiry {expiryMs}ms");
+            }
+            else if (opcode == 0xFC)
+            {
+                // Expiry time in milliseconds
+                ulong expiryMs = BitConverter.ToUInt64(fileBytes, offset);
+                offset += 8;
+                
+                // Read value type and key-value pair
+                byte valueType = fileBytes[offset];
+                offset++;
+                
+                var (key, keyBytesRead) = ReadString(fileBytes, offset);
+                offset += keyBytesRead;
+                
+                var (value, valueBytesRead) = ReadString(fileBytes, offset);
+                offset += valueBytesRead;
+                
+                dataStore[key] = new StoredValue(value, (long)expiryMs);
+                Console.WriteLine($"[RDB] Loaded key '{key}' with expiry {expiryMs}ms");
+            }
+            else if (opcode == 0xFB)
+            {
+                // Resizedb - hash table size information
+                var (dbHashTableSize, bytesRead1) = ReadLength(fileBytes, offset);
+                offset += bytesRead1;
+                var (expiryHashTableSize, bytesRead2) = ReadLength(fileBytes, offset);
+                offset += bytesRead2;
+                Console.WriteLine($"[RDB] Resize DB: hash table size={dbHashTableSize}, expiry hash table size={expiryHashTableSize}");
+            }
+            else if (opcode == 0xFA)
+            {
+                // Auxiliary field
+                var (auxKey, keyBytesRead) = ReadString(fileBytes, offset);
+                offset += keyBytesRead;
+                var (auxValue, valueBytesRead) = ReadString(fileBytes, offset);
+                offset += valueBytesRead;
+                Console.WriteLine($"[RDB] Auxiliary field: {auxKey}={auxValue}");
+            }
+            else
+            {
+                // Value type - this is a key-value pair without expiry
+                byte valueType = opcode;
+                
+                var (key, keyBytesRead) = ReadString(fileBytes, offset);
+                offset += keyBytesRead;
+                
+                if (valueType == 0)
+                {
+                    // String encoding
+                    var (value, valueBytesRead) = ReadString(fileBytes, offset);
+                    offset += valueBytesRead;
+                    
+                    dataStore[key] = new StoredValue(value);
+                    Console.WriteLine($"[RDB] Loaded key '{key}' = '{value}'");
+                }
+                else
+                {
+                    Console.WriteLine($"[RDB] Unsupported value type: {valueType}");
+                    break;
+                }
+            }
+        }
+        
+        Console.WriteLine($"[RDB] Loaded {dataStore.Count} keys from RDB file");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[RDB] Error loading RDB file: {ex.Message}");
+    }
+}
+
+/* Read length-encoded value from RDB file */
+(int length, int bytesRead) ReadLength(byte[] data, int offset)
+{
+    byte firstByte = data[offset];
+    int type = (firstByte & 0xC0) >> 6;
+    
+    if (type == 0)
+    {
+        // 6-bit length
+        return (firstByte & 0x3F, 1);
+    }
+    else if (type == 1)
+    {
+        // 14-bit length
+        int length = ((firstByte & 0x3F) << 8) | data[offset + 1];
+        return (length, 2);
+    }
+    else if (type == 2)
+    {
+        // 32-bit length (big-endian)
+        int length = (data[offset + 1] << 24) | (data[offset + 2] << 16) | 
+                     (data[offset + 3] << 8) | data[offset + 4];
+        return (length, 5);
+    }
+    else
+    {
+        // Special encoding
+        return (firstByte & 0x3F, 1);
+    }
+}
+
+/* Read length-prefixed string from RDB file */
+(string str, int bytesRead) ReadString(byte[] data, int offset)
+{
+    var (length, lengthBytes) = ReadLength(data, offset);
+    int totalBytesRead = lengthBytes;
+    
+    // Check for special encoding
+    byte firstByte = data[offset];
+    int type = (firstByte & 0xC0) >> 6;
+    
+    if (type == 3)
+    {
+        // Special encoding - handle integer encoding
+        int encodingType = firstByte & 0x3F;
+        if (encodingType == 0)
+        {
+            // 8-bit integer
+            int value = (sbyte)data[offset + 1];
+            return (value.ToString(), 2);
+        }
+        else if (encodingType == 1)
+        {
+            // 16-bit integer (little-endian)
+            short value = BitConverter.ToInt16(data, offset + 1);
+            return (value.ToString(), 3);
+        }
+        else if (encodingType == 2)
+        {
+            // 32-bit integer (little-endian)
+            int value = BitConverter.ToInt32(data, offset + 1);
+            return (value.ToString(), 5);
+        }
+    }
+    
+    string str = Encoding.UTF8.GetString(data, offset + lengthBytes, length);
+    totalBytesRead += length;
+    return (str, totalBytesRead);
 }
 
 /* Blocked client waiting for an element from a list */
