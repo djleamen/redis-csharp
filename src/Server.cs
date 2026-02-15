@@ -1717,6 +1717,22 @@ async Task HandleClient(Socket client)
                     response = sb.ToString();
                 }
             }
+            // PUBLISH - Publish a message to a channel
+            else if (command == "PUBLISH" && parts.Length >= 3)
+            {
+                string channel = parts[1];
+                
+                int subscriberCount = 0;
+                lock (subscriptionsLock)
+                {
+                    if (channelSubscribers.TryGetValue(channel, out HashSet<Socket>? subscribers))
+                    {
+                        subscriberCount = subscribers.Count;
+                    }
+                }
+                
+                response = $":{subscriberCount}\r\n";
+            }
             // SUBSCRIBE - Subscribe to one or more channels
             else if (command == "SUBSCRIBE" && parts.Length >= 2)
             {
