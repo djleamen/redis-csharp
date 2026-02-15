@@ -1783,6 +1783,47 @@ async Task HandleClient(Socket client)
                 
                 response = string.Empty;
             }
+            // UNSUBSCRIBE - Unsubscribe from one or more channels
+            else if (command == "UNSUBSCRIBE" && parts.Length >= 2)
+            {
+                lock (subscriptionsLock)
+                {
+                    for (int i = 1; i < parts.Length; i++)
+                    {
+                        string channel = parts[i];
+                        
+                        if (channelSubscribers.TryGetValue(channel, out HashSet<Socket>? subscribers))
+                        {
+                            subscribers.Remove(client);
+                            if (subscribers.Count == 0)
+                            {
+                                channelSubscribers.TryRemove(channel, out _);
+                            }
+                        }
+                        
+                        if (clientSubscriptions.TryGetValue(client, out HashSet<string>? channels))
+                        {
+                            channels.Remove(channel);
+                        }
+                        
+                        int subscriptionCount = clientSubscriptions.ContainsKey(client) ? clientSubscriptions[client].Count : 0;
+                        string unsubResponse = $"*3\r\n$11\r\nunsubscribe\r\n${channel.Length}\r\n{channel}\r\n:{subscriptionCount}\r\n";
+                        byte[] unsubResponseBytes = Encoding.UTF8.GetBytes(unsubResponse);
+                        client.Send(unsubResponseBytes);
+                    }
+                    
+                    if (!clientSubscriptions.ContainsKey(client) || clientSubscriptions[client].Count == 0)
+                    {
+                        isSubscribedMode = false;
+                        if (clientSubscriptions.ContainsKey(client))
+                        {
+                            clientSubscriptions.TryRemove(client, out _);
+                        }
+                    }
+                }
+                
+                response = string.Empty;
+            }
             else
             {
                 response = "-ERR unknown command\r\n";
