@@ -55,6 +55,10 @@ var blockedClientsLock = new object();
 var blockedStreamReaders = new ConcurrentDictionary<string, Queue<BlockedStreamReader>>();
 var blockedStreamReadersLock = new object();
 
+var channelSubscribers = new ConcurrentDictionary<string, HashSet<Socket>>();
+var clientSubscriptions = new ConcurrentDictionary<Socket, HashSet<string>>();
+var subscriptionsLock = new object();
+
 var replicaConnections = new List<Socket>();
 var replicaConnectionsLock = new object();
 var replicaAckOffsets = new Dictionary<Socket, long>();
@@ -1692,6 +1696,37 @@ async Task HandleClient(Socket client)
                     response = sb.ToString();
                 }
             }
+            // SUBSCRIBE - Subscribe to one or more channels
+            else if (command == "SUBSCRIBE" && parts.Length >= 2)
+            {
+                lock (subscriptionsLock)
+                {
+                    if (!clientSubscriptions.ContainsKey(client))
+                    {
+                        clientSubscriptions[client] = new HashSet<string>();
+                    }
+                    
+                    for (int i = 1; i < parts.Length; i++)
+                    {
+                        string channel = parts[i];
+                        
+                        if (!channelSubscribers.ContainsKey(channel))
+                        {
+                            channelSubscribers[channel] = new HashSet<Socket>();
+                        }
+                        channelSubscribers[channel].Add(client);
+                        
+                        clientSubscriptions[client].Add(channel);
+                        
+                        int subscriptionCount = clientSubscriptions[client].Count;
+                        string subResponse = $"*3\r\n$9\r\nsubscribe\r\n${channel.Length}\r\n{channel}\r\n:{subscriptionCount}\r\n";
+                        byte[] subResponseBytes = Encoding.UTF8.GetBytes(subResponse);
+                        client.Send(subResponseBytes);
+                    }
+                }
+                
+                response = string.Empty;
+            }
             else
             {
                 response = "-ERR unknown command\r\n";
@@ -1714,6 +1749,27 @@ async Task HandleClient(Socket client)
         replicaConnections.Remove(client);
         replicaAckOffsets.Remove(client);
     }
+    
+    // Clean up subscriptions
+    lock (subscriptionsLock)
+    {
+        if (clientSubscriptions.TryGetValue(client, out HashSet<string>? channels))
+        {
+            foreach (string channel in channels)
+            {
+                if (channelSubscribers.TryGetValue(channel, out HashSet<Socket>? subscribers))
+                {
+                    subscribers.Remove(client);
+                    if (subscribers.Count == 0)
+                    {
+                        channelSubscribers.TryRemove(channel, out _);
+                    }
+                }
+            }
+            clientSubscriptions.TryRemove(client, out _);
+        }
+    }
+    
     client.Close();
 }
 
@@ -1950,7 +2006,6 @@ void LoadRdbFile(string filePath)
         byte[] fileBytes = File.ReadAllBytes(filePath);
         int offset = 0;
         
-        // Read magic string "REDIS"
         string magic = Encoding.ASCII.GetString(fileBytes, offset, 5);
         offset += 5;
         
@@ -1960,12 +2015,10 @@ void LoadRdbFile(string filePath)
             return;
         }
         
-        // Read RDB version (4 bytes)
         string version = Encoding.ASCII.GetString(fileBytes, offset, 4);
         offset += 4;
         Console.WriteLine($"[RDB] Loading RDB version {version}");
         
-        // Parse the rest of the file
         while (offset < fileBytes.Length)
         {
             byte opcode = fileBytes[offset];
