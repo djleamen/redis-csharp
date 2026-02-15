@@ -1721,6 +1721,7 @@ async Task HandleClient(Socket client)
             else if (command == "PUBLISH" && parts.Length >= 3)
             {
                 string channel = parts[1];
+                string message = parts[2];
                 
                 int subscriberCount = 0;
                 lock (subscriptionsLock)
@@ -1728,6 +1729,21 @@ async Task HandleClient(Socket client)
                     if (channelSubscribers.TryGetValue(channel, out HashSet<Socket>? subscribers))
                     {
                         subscriberCount = subscribers.Count;
+                        
+                        string messageResponse = $"*3\r\n$7\r\nmessage\r\n${channel.Length}\r\n{channel}\r\n${message.Length}\r\n{message}\r\n";
+                        byte[] messageBytes = Encoding.UTF8.GetBytes(messageResponse);
+                        
+                        foreach (Socket subscriber in subscribers.ToList())
+                        {
+                            try
+                            {
+                                subscriber.Send(messageBytes);
+                            }
+                            catch (Exception)
+                            {
+                                // Subscriber disconnected or error sending, skip
+                            }
+                        }
                     }
                 }
                 
