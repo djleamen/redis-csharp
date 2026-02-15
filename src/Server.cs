@@ -513,6 +513,7 @@ async Task HandleClient(Socket client)
     bool inTransaction = false;
     var transactionQueue = new List<string[]>();
     bool isReplicationConnection = false;
+    bool isSubscribedMode = false;
     
     while (true)
     {
@@ -532,6 +533,18 @@ async Task HandleClient(Socket client)
             
             string command = parts[0].ToUpper();
             string response = string.Empty;
+            
+            if (isSubscribedMode)
+            {
+                string[] allowedCommands = { "SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT", "RESET" };
+                if (!allowedCommands.Contains(command))
+                {
+                    response = $"-ERR Can't execute '{command.ToLower()}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n";
+                    byte[] errorBytes = Encoding.UTF8.GetBytes(response);
+                    client.Send(errorBytes);
+                    continue;
+                }
+            }
             
             // MULTI - Start a transaction
             if (command == "MULTI")
@@ -1723,6 +1736,9 @@ async Task HandleClient(Socket client)
                         byte[] subResponseBytes = Encoding.UTF8.GetBytes(subResponse);
                         client.Send(subResponseBytes);
                     }
+                    
+                    // Enter subscribed mode
+                    isSubscribedMode = true;
                 }
                 
                 response = string.Empty;
