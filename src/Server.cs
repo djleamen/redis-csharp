@@ -604,7 +604,15 @@ async Task HandleClient(Socket client)
             // PING and ECHO
             else if (command == "PING")
             {
-                response = "+PONG\r\n";
+                if (isSubscribedMode)
+                {
+                    // In subscribed mode, PING responds with ["pong", ""] as a RESP array
+                    response = "*2\r\n$4\r\npong\r\n$0\r\n\r\n";
+                }
+                else
+                {
+                    response = "+PONG\r\n";
+                }
             }
             else if (command == "ECHO" && parts.Length > 1)
             {
