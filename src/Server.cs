@@ -259,17 +259,34 @@ async Task ConnectToMaster(string host, int masterPort, int replicaPort)
         }
         
         int rdbStart = fullresyncEnd + 2;
-        if (rdbStart >= fullResponse.Length || fullResponse[rdbStart] != '$')
+        
+        // Read more data if we don't have the RDB bulk string header yet
+        while (rdbStart >= fullResponse.Length || fullResponse[rdbStart] != '$')
         {
-            Console.WriteLine("[Replica] Error: Invalid RDB format");
-            return;
+            int additionalBytesRead = await stream.ReadAsync(buffer, bytesRead, buffer.Length - bytesRead);
+            if (additionalBytesRead == 0)
+            {
+                Console.WriteLine("[Replica] Error: Connection closed while waiting for RDB header");
+                return;
+            }
+            bytesRead += additionalBytesRead;
+            fullResponse = Encoding.UTF8.GetString(buffer, 0, bytesRead);
         }
         
         int rdbLenEnd = fullResponse.IndexOf("\r\n", rdbStart);
-        if (rdbLenEnd == -1)
+        
+        // Read more data if we don't have the complete RDB length line yet
+        while (rdbLenEnd == -1)
         {
-            Console.WriteLine("[Replica] Error: Invalid RDB length");
-            return;
+            int additionalBytesRead = await stream.ReadAsync(buffer, bytesRead, buffer.Length - bytesRead);
+            if (additionalBytesRead == 0)
+            {
+                Console.WriteLine("[Replica] Error: Connection closed while reading RDB length");
+                return;
+            }
+            bytesRead += additionalBytesRead;
+            fullResponse = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+            rdbLenEnd = fullResponse.IndexOf("\r\n", rdbStart);
         }
         
         string rdbLenStr = fullResponse.Substring(rdbStart + 1, rdbLenEnd - rdbStart - 1);
