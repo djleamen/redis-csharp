@@ -245,6 +245,43 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             }
         }
     }
+    // ZRANK - Get the rank of a member in a sorted set
+    else if (command == "ZRANK" && parts.Length >= 3)
+    {
+        string key = parts[1];
+        string member = parts[2];
+        
+        if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+        {
+            response = "$-1\r\n";  // Key doesn't exist
+        }
+        else if (storedValue.SortedSet == null)
+        {
+            response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+        }
+        else
+        {
+            // Find the index of the member in the sorted set
+            int rank = -1;
+            for (int i = 0; i < storedValue.SortedSet.Count; i++)
+            {
+                if (storedValue.SortedSet[i].Member == member)
+                {
+                    rank = i;
+                    break;
+                }
+            }
+            
+            if (rank >= 0)
+            {
+                response = $":{rank}\r\n";
+            }
+            else
+            {
+                response = "$-1\r\n";  // Member doesn't exist
+            }
+        }
+    }
     else
     {
         response = "-ERR unknown command\r\n";
@@ -964,6 +1001,43 @@ async Task HandleClient(Socket client)
                         {
                             response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                         }
+                    }
+                }
+            }
+            // ZRANK - Get the rank of a member in a sorted set
+            else if (command == "ZRANK" && parts.Length >= 3)
+            {
+                string key = parts[1];
+                string member = parts[2];
+                
+                if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    response = "$-1\r\n";  // Key doesn't exist
+                }
+                else if (storedValue.SortedSet == null)
+                {
+                    response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                }
+                else
+                {
+                    // Find the index of the member in the sorted set
+                    int rank = -1;
+                    for (int i = 0; i < storedValue.SortedSet.Count; i++)
+                    {
+                        if (storedValue.SortedSet[i].Member == member)
+                        {
+                            rank = i;
+                            break;
+                        }
+                    }
+                    
+                    if (rank >= 0)
+                    {
+                        response = $":{rank}\r\n";
+                    }
+                    else
+                    {
+                        response = "$-1\r\n";  // Member doesn't exist
                     }
                 }
             }
