@@ -304,6 +304,16 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             var sortedSet = storedValue.SortedSet;
             int count = sortedSet.Count;
             
+            // Convert negative indexes to positive
+            if (start < 0)
+            {
+                start = Math.Max(0, count + start);
+            }
+            if (stop < 0)
+            {
+                stop = Math.Max(0, count + stop);
+            }
+            
             // Handle edge cases
             if (start >= count || start > stop)
             {
@@ -1112,6 +1122,15 @@ async Task HandleClient(Socket client)
                 {
                     var sortedSet = storedValue.SortedSet;
                     int count = sortedSet.Count;
+                    
+                    if (start < 0)
+                    {
+                        start = Math.Max(0, count + start);
+                    }
+                    if (stop < 0)
+                    {
+                        stop = Math.Max(0, count + stop);
+                    }
                     
                     // Handle edge cases
                     if (start >= count || start > stop)
