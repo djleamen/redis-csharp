@@ -389,6 +389,35 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             }
         }
     }
+    // ZREM - Remove a member from a sorted set
+    else if (command == "ZREM" && parts.Length >= 3)
+    {
+        string key = parts[1];
+        string member = parts[2];
+        
+        if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+        {
+            response = ":0\r\n";  // Key doesn't exist
+        }
+        else if (storedValue.SortedSet == null)
+        {
+            response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+        }
+        else
+        {
+            // Find and remove the member from the sorted set
+            var entry = storedValue.SortedSet.FirstOrDefault(e => e.Member == member);
+            if (entry != null)
+            {
+                storedValue.SortedSet.Remove(entry);
+                response = ":1\r\n";  // Member removed
+            }
+            else
+            {
+                response = ":0\r\n";  // Member doesn't exist
+            }
+        }
+    }
     else
     {
         response = "-ERR unknown command\r\n";
@@ -1233,7 +1262,7 @@ async Task HandleClient(Socket client)
                 
                 if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
                 {
-                    response = "$-1\r\n";  // Key doesn't exist
+                    response = "$-1\r\n";
                 }
                 else if (storedValue.SortedSet == null)
                 {
@@ -1250,7 +1279,35 @@ async Task HandleClient(Socket client)
                     }
                     else
                     {
-                        response = "$-1\r\n";  // Member doesn't exist
+                        response = "$-1\r\n";
+                    }
+                }
+            }
+            // ZREM - Remove a member from a sorted set
+            else if (command == "ZREM" && parts.Length >= 3)
+            {
+                string key = parts[1];
+                string member = parts[2];
+                
+                if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    response = ":0\r\n";  // Key doesn't exist
+                }
+                else if (storedValue.SortedSet == null)
+                {
+                    response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                }
+                else
+                {
+                    var entry = storedValue.SortedSet.FirstOrDefault(e => e.Member == member);
+                    if (entry != null)
+                    {
+                        storedValue.SortedSet.Remove(entry);
+                        response = ":1\r\n";
+                    }
+                    else
+                    {
+                        response = ":0\r\n";
                     }
                 }
             }
