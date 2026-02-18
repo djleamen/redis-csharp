@@ -282,6 +282,56 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             }
         }
     }
+    // ZRANGE - List members from a sorted set by index range
+    else if (command == "ZRANGE" && parts.Length >= 4)
+    {
+        string key = parts[1];
+        
+        if (!int.TryParse(parts[2], out int start) || !int.TryParse(parts[3], out int stop))
+        {
+            response = "-ERR value is not an integer or out of range\r\n";
+        }
+        else if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+        {
+            response = "*0\r\n";  // Key doesn't exist, return empty array
+        }
+        else if (storedValue.SortedSet == null)
+        {
+            response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+        }
+        else
+        {
+            var sortedSet = storedValue.SortedSet;
+            int count = sortedSet.Count;
+            
+            // Handle edge cases
+            if (start >= count || start > stop)
+            {
+                response = "*0\r\n";  // Empty array
+            }
+            else
+            {
+                // Adjust stop index if it exceeds the cardinality
+                if (stop >= count)
+                {
+                    stop = count - 1;
+                }
+                
+                // Build the RESP array response
+                var sb = new StringBuilder();
+                int resultCount = stop - start + 1;
+                sb.Append($"*{resultCount}\r\n");
+                
+                for (int i = start; i <= stop; i++)
+                {
+                    string member = sortedSet[i].Member;
+                    sb.Append($"${member.Length}\r\n{member}\r\n");
+                }
+                
+                response = sb.ToString();
+            }
+        }
+    }
     else
     {
         response = "-ERR unknown command\r\n";
@@ -1038,6 +1088,56 @@ async Task HandleClient(Socket client)
                     else
                     {
                         response = "$-1\r\n";  // Member doesn't exist
+                    }
+                }
+            }
+            // ZRANGE - List members from a sorted set by index range
+            else if (command == "ZRANGE" && parts.Length >= 4)
+            {
+                string key = parts[1];
+                
+                if (!int.TryParse(parts[2], out int start) || !int.TryParse(parts[3], out int stop))
+                {
+                    response = "-ERR value is not an integer or out of range\r\n";
+                }
+                else if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    response = "*0\r\n";  // Key doesn't exist, return empty array
+                }
+                else if (storedValue.SortedSet == null)
+                {
+                    response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                }
+                else
+                {
+                    var sortedSet = storedValue.SortedSet;
+                    int count = sortedSet.Count;
+                    
+                    // Handle edge cases
+                    if (start >= count || start > stop)
+                    {
+                        response = "*0\r\n";  // Empty array
+                    }
+                    else
+                    {
+                        // Adjust stop index if it exceeds the cardinality
+                        if (stop >= count)
+                        {
+                            stop = count - 1;
+                        }
+                        
+                        // Build the RESP array response
+                        var sb = new StringBuilder();
+                        int resultCount = stop - start + 1;
+                        sb.Append($"*{resultCount}\r\n");
+                        
+                        for (int i = start; i <= stop; i++)
+                        {
+                            string member = sortedSet[i].Member;
+                            sb.Append($"${member.Length}\r\n{member}\r\n");
+                        }
+                        
+                        response = sb.ToString();
                     }
                 }
             }
