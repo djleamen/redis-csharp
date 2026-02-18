@@ -360,6 +360,35 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             response = $":{storedValue.SortedSet.Count}\r\n";
         }
     }
+    // ZSCORE - Get the score of a member in a sorted set
+    else if (command == "ZSCORE" && parts.Length >= 3)
+    {
+        string key = parts[1];
+        string member = parts[2];
+        
+        if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+        {
+            response = "$-1\r\n";  // Key doesn't exist
+        }
+        else if (storedValue.SortedSet == null)
+        {
+            response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+        }
+        else
+        {
+            // Find the member in the sorted set
+            var entry = storedValue.SortedSet.FirstOrDefault(e => e.Member == member);
+            if (entry != null)
+            {
+                string scoreStr = entry.Score.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                response = $"${scoreStr.Length}\r\n{scoreStr}\r\n";
+            }
+            else
+            {
+                response = "$-1\r\n";  // Member doesn't exist
+            }
+        }
+    }
     else
     {
         response = "-ERR unknown command\r\n";
@@ -1194,6 +1223,35 @@ async Task HandleClient(Socket client)
                 else
                 {
                     response = $":{storedValue.SortedSet.Count}\r\n";
+                }
+            }
+            // ZSCORE - Get the score of a member in a sorted set
+            else if (command == "ZSCORE" && parts.Length >= 3)
+            {
+                string key = parts[1];
+                string member = parts[2];
+                
+                if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    response = "$-1\r\n";  // Key doesn't exist
+                }
+                else if (storedValue.SortedSet == null)
+                {
+                    response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                }
+                else
+                {
+                    // Find the member in the sorted set
+                    var entry = storedValue.SortedSet.FirstOrDefault(e => e.Member == member);
+                    if (entry != null)
+                    {
+                        string scoreStr = entry.Score.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        response = $"${scoreStr.Length}\r\n{scoreStr}\r\n";
+                    }
+                    else
+                    {
+                        response = "$-1\r\n";  // Member doesn't exist
+                    }
                 }
             }
             // WAIT - Wait for acknowledgements from replicas
