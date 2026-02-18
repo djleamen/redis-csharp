@@ -342,6 +342,24 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             }
         }
     }
+    // ZCARD - Get the cardinality of a sorted set
+    else if (command == "ZCARD" && parts.Length >= 2)
+    {
+        string key = parts[1];
+        
+        if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+        {
+            response = ":0\r\n";  // Key doesn't exist
+        }
+        else if (storedValue.SortedSet == null)
+        {
+            response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+        }
+        else
+        {
+            response = $":{storedValue.SortedSet.Count}\r\n";
+        }
+    }
     else
     {
         response = "-ERR unknown command\r\n";
@@ -1158,6 +1176,24 @@ async Task HandleClient(Socket client)
                         
                         response = sb.ToString();
                     }
+                }
+            }
+            // ZCARD - Get the cardinality of a sorted set
+            else if (command == "ZCARD" && parts.Length >= 2)
+            {
+                string key = parts[1];
+                
+                if (!dataStore.TryGetValue(key, out StoredValue? storedValue))
+                {
+                    response = ":0\r\n";  // Key doesn't exist
+                }
+                else if (storedValue.SortedSet == null)
+                {
+                    response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                }
+                else
+                {
+                    response = $":{storedValue.SortedSet.Count}\r\n";
                 }
             }
             // WAIT - Wait for acknowledgements from replicas
