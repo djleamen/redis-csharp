@@ -202,7 +202,7 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
     {
         string key = parts[1];
         
-        if (!double.TryParse(parts[2], out double score))
+        if (!double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double score))
         {
             response = "-ERR value is not a valid float\r\n";
         }
