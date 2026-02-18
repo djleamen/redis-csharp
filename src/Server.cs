@@ -197,6 +197,54 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             response = ":1\r\n";
         }
     }
+    // ZADD - Add member to a sorted set
+    else if (command == "ZADD" && parts.Length >= 4)
+    {
+        string key = parts[1];
+        
+        if (!double.TryParse(parts[2], out double score))
+        {
+            response = "-ERR value is not a valid float\r\n";
+        }
+        else
+        {
+            string member = parts[3];
+            
+            if (!dataStore.ContainsKey(key))
+            {
+                var sortedSet = new List<SortedSetEntry> { new SortedSetEntry(member, score) };
+                dataStore[key] = new StoredValue(sortedSet);
+                response = ":1\r\n";
+            }
+            else
+            {
+                if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.SortedSet != null)
+                {
+                    // Check if member already exists
+                    var existingEntry = storedValue.SortedSet.FirstOrDefault(e => e.Member == member);
+                    if (existingEntry != null)
+                    {
+                        // Member already exists, update score
+                        storedValue.SortedSet.Remove(existingEntry);
+                        storedValue.SortedSet.Add(new SortedSetEntry(member, score));
+                        storedValue.SortedSet.Sort();
+                        response = ":0\r\n";  // No new members added
+                    }
+                    else
+                    {
+                        // New member
+                        storedValue.SortedSet.Add(new SortedSetEntry(member, score));
+                        storedValue.SortedSet.Sort();
+                        response = ":1\r\n";
+                    }
+                }
+                else
+                {
+                    response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                }
+            }
+        }
+    }
     else
     {
         response = "-ERR unknown command\r\n";
@@ -2320,12 +2368,29 @@ record BlockedStreamReader(string[] Keys, string[] Ids, TaskCompletionSource<Lis
 /* Stream entry with ID and key-value pairs */
 record StreamEntry(string Id, Dictionary<string, string> Fields);
 
+/* Sorted set entry with member and score */
+record SortedSetEntry(string Member, double Score) : IComparable<SortedSetEntry>
+{
+    public int CompareTo(SortedSetEntry? other)
+    {
+        if (other == null) return 1;
+        
+        // First compare by score
+        int scoreComparison = Score.CompareTo(other.Score);
+        if (scoreComparison != 0) return scoreComparison;
+        
+        // If scores are equal, compare by member lexicographically
+        return string.Compare(Member, other.Member, StringComparison.Ordinal);
+    }
+}
+
 /* Store value and expiry time */
 record StoredValue
 {
     public string? Value { get; init; }
     public List<string>? List { get; init; }
     public List<StreamEntry>? Stream { get; init; }
+    public List<SortedSetEntry>? SortedSet { get; init; }
     public long? ExpiryMs { get; init; }
     
     public StoredValue(string value, long? expiryMs = null)
@@ -2343,6 +2408,12 @@ record StoredValue
     public StoredValue(List<StreamEntry> stream, long? expiryMs = null)
     {
         Stream = stream;
+        ExpiryMs = expiryMs;
+    }
+    
+    public StoredValue(List<SortedSetEntry> sortedSet, long? expiryMs = null)
+    {
+        SortedSet = sortedSet;
         ExpiryMs = expiryMs;
     }
 }
