@@ -919,6 +919,54 @@ async Task HandleClient(Socket client)
                     response = ":1\r\n";
                 }
             }
+            // ZADD - Add member to a sorted set
+            else if (command == "ZADD" && parts.Length >= 4)
+            {
+                string key = parts[1];
+                
+                if (!double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double score))
+                {
+                    response = "-ERR value is not a valid float\r\n";
+                }
+                else
+                {
+                    string member = parts[3];
+                    
+                    if (!dataStore.ContainsKey(key))
+                    {
+                        var sortedSet = new List<SortedSetEntry> { new SortedSetEntry(member, score) };
+                        dataStore[key] = new StoredValue(sortedSet);
+                        response = ":1\r\n";
+                    }
+                    else
+                    {
+                        if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.SortedSet != null)
+                        {
+                            // Check if member already exists
+                            var existingEntry = storedValue.SortedSet.FirstOrDefault(e => e.Member == member);
+                            if (existingEntry != null)
+                            {
+                                // Member already exists, update score
+                                storedValue.SortedSet.Remove(existingEntry);
+                                storedValue.SortedSet.Add(new SortedSetEntry(member, score));
+                                storedValue.SortedSet.Sort();
+                                response = ":0\r\n";  // No new members added
+                            }
+                            else
+                            {
+                                // New member
+                                storedValue.SortedSet.Add(new SortedSetEntry(member, score));
+                                storedValue.SortedSet.Sort();
+                                response = ":1\r\n";
+                            }
+                        }
+                        else
+                        {
+                            response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                        }
+                    }
+                }
+            }
             // WAIT - Wait for acknowledgements from replicas
             else if (command == "WAIT" && parts.Length >= 3)
             {
