@@ -245,10 +245,26 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             }
         }
     }
-    // GEOADD - Add geospatial item (minimal stage behavior)
+    // GEOADD - Add geospatial item
     else if (command == "GEOADD" && parts.Length >= 5)
     {
-        response = ":1\r\n";
+        if (!double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double lon) ||
+            !double.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double lat))
+        {
+            response = "-ERR invalid longitude,latitude pair\r\n";
+        }
+        else if (lon < -180.0 || lon > 180.0)
+        {
+            response = $"-ERR invalid longitude,latitude pair {lon:F6},{lat:F6}\r\n";
+        }
+        else if (lat < -85.05112878 || lat > 85.05112878)
+        {
+            response = $"-ERR invalid longitude,latitude pair {lon:F6},{lat:F6}\r\n";
+        }
+        else
+        {
+            response = ":1\r\n";
+        }
     }
     // ZRANK - Get the rank of a member in a sorted set
     else if (command == "ZRANK" && parts.Length >= 3)
@@ -1145,10 +1161,26 @@ async Task HandleClient(Socket client)
                     }
                 }
             }
-            // GEOADD - Add geospatial item (minimal stage behavior)
+            // GEOADD - Add geospatial item
             else if (command == "GEOADD" && parts.Length >= 5)
             {
-                response = ":1\r\n";
+                if (!double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double lon) ||
+                    !double.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double lat))
+                {
+                    response = "-ERR invalid longitude,latitude pair\r\n";
+                }
+                else if (lon < -180.0 || lon > 180.0)
+                {
+                    response = $"-ERR invalid longitude,latitude pair {lon:F6},{lat:F6}\r\n";
+                }
+                else if (lat < -85.05112878 || lat > 85.05112878)
+                {
+                    response = $"-ERR invalid longitude,latitude pair {lon:F6},{lat:F6}\r\n";
+                }
+                else
+                {
+                    response = ":1\r\n";
+                }
             }
             // ZRANK - Get the rank of a member in a sorted set
             else if (command == "ZRANK" && parts.Length >= 3)
