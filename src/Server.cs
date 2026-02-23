@@ -399,6 +399,11 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             response = sbGs.ToString();
         }
     }
+    // ACL WHOAMI - Return the username of the current connection
+    else if (command == "ACL" && parts.Length >= 2 && parts[1].ToUpper() == "WHOAMI")
+    {
+        response = "$7\r\ndefault\r\n";
+    }
     // ZRANK - Get the rank of a member in a sorted set
     else if (command == "ZRANK" && parts.Length >= 3)
     {
@@ -1446,6 +1451,11 @@ async Task HandleClient(Socket client)
                         sbGs.Append($"${m.Length}\r\n{m}\r\n");
                     response = sbGs.ToString();
                 }
+            }
+            // ACL WHOAMI - Return the username of the current connection
+            else if (command == "ACL" && parts.Length >= 2 && parts[1].ToUpper() == "WHOAMI")
+            {
+                response = "$7\r\ndefault\r\n";
             }
             // ZRANK - Get the rank of a member in a sorted set
             else if (command == "ZRANK" && parts.Length >= 3)
