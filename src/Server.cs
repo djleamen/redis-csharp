@@ -410,8 +410,8 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
         string username = parts[2];
         if (username == "default")
         {
-            // Return array: ["flags", ["nopass"]]
-            response = "*2\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n";
+            // Return array: ["flags", ["nopass"], "passwords", []]
+            response = "*4\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n$9\r\npasswords\r\n*0\r\n";
         }
         else
         {
@@ -1477,8 +1477,8 @@ async Task HandleClient(Socket client)
                 string username = parts[2];
                 if (username == "default")
                 {
-                    // Return array: ["flags", ["nopass"]]
-                    response = "*2\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n";
+                    // Return array: ["flags", ["nopass"], "passwords", []]
+                    response = "*4\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n$9\r\npasswords\r\n*0\r\n";
                 }
                 else
                 {
