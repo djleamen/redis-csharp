@@ -404,6 +404,32 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             response = sbGs.ToString();
         }
     }
+    // AUTH - Authenticate the current connection
+    else if (command == "AUTH" && parts.Length >= 3)
+    {
+        string username = parts[1];
+        string password = parts[2];
+        if (username == "default")
+        {
+            if (defaultUserFlags.Contains("nopass"))
+            {
+                response = "+OK\r\n";
+            }
+            else
+            {
+                byte[] hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
+                string hash = Convert.ToHexString(hashBytes).ToLower();
+                if (defaultUserPasswords.Contains(hash))
+                    response = "+OK\r\n";
+                else
+                    response = "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
+            }
+        }
+        else
+        {
+            response = "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
+        }
+    }
     // ACL WHOAMI - Return the username of the current connection
     else if (command == "ACL" && parts.Length >= 2 && parts[1].ToUpper() == "WHOAMI")
     {
@@ -1503,6 +1529,32 @@ async Task HandleClient(Socket client)
                     foreach (var m in matches)
                         sbGs.Append($"${m.Length}\r\n{m}\r\n");
                     response = sbGs.ToString();
+                }
+            }
+            // AUTH - Authenticate the current connection
+            else if (command == "AUTH" && parts.Length >= 3)
+            {
+                string username = parts[1];
+                string password = parts[2];
+                if (username == "default")
+                {
+                    if (defaultUserFlags.Contains("nopass"))
+                    {
+                        response = "+OK\r\n";
+                    }
+                    else
+                    {
+                        byte[] hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
+                        string hash = Convert.ToHexString(hashBytes).ToLower();
+                        if (defaultUserPasswords.Contains(hash))
+                            response = "+OK\r\n";
+                        else
+                            response = "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
+                    }
+                }
+                else
+                {
+                    response = "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
                 }
             }
             // ACL WHOAMI - Return the username of the current connection
