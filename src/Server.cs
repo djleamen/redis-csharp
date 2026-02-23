@@ -313,7 +313,10 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
                 var entry = geoVal.SortedSet.FirstOrDefault(e => e.Member == member);
                 if (entry != null)
                 {
-                    sb.Append("*2\r\n$1\r\n0\r\n$1\r\n0\r\n");
+                    var (decLon, decLat) = DecodeGeoHash((long)entry.Score);
+                    string lonStr = decLon.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                    string latStr = decLat.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                    sb.Append($"*2\r\n${lonStr.Length}\r\n{lonStr}\r\n${latStr.Length}\r\n{latStr}\r\n");
                     found = true;
                 }
             }
@@ -1285,7 +1288,10 @@ async Task HandleClient(Socket client)
                         var entry = geoVal.SortedSet.FirstOrDefault(e => e.Member == member);
                         if (entry != null)
                         {
-                            sbGeo.Append("*2\r\n$1\r\n0\r\n$1\r\n0\r\n");
+                            var (decLon, decLat) = DecodeGeoHash((long)entry.Score);
+                            string lonStr = decLon.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                            string latStr = decLat.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                            sbGeo.Append($"*2\r\n${lonStr.Length}\r\n{lonStr}\r\n${latStr.Length}\r\n{latStr}\r\n");
                             found = true;
                         }
                     }
@@ -2932,6 +2938,21 @@ long EncodeGeoHash(double longitude, double latitude)
     }
 
     return result;
+}
+
+/* Decode a Redis geohash score back to (longitude, latitude). */
+(double lon, double lat) DecodeGeoHash(long score)
+{
+    long latBits = 0;
+    long lonBits = 0;
+    for (int i = 0; i < 26; i++)
+    {
+        latBits |= ((score >> (2 * i)) & 1L) << i;
+        lonBits |= ((score >> (2 * i + 1)) & 1L) << i;
+    }
+    double lon = (lonBits + 0.5) / (double)(1L << 26) * 360.0 - 180.0;
+    double lat = (latBits + 0.5) / (double)(1L << 26) * 170.10225756 - 85.05112878;
+    return (lon, lat);
 }
 
 /* Blocked client waiting for an element from a list */
