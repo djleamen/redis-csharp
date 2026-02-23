@@ -404,6 +404,20 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
     {
         response = "$7\r\ndefault\r\n";
     }
+    // ACL GETUSER - Get properties of a user
+    else if (command == "ACL" && parts.Length >= 3 && parts[1].ToUpper() == "GETUSER")
+    {
+        string username = parts[2];
+        if (username == "default")
+        {
+            // Return array: ["flags", []]
+            response = "*2\r\n$5\r\nflags\r\n*0\r\n";
+        }
+        else
+        {
+            response = "$-1\r\n";
+        }
+    }
     // ZRANK - Get the rank of a member in a sorted set
     else if (command == "ZRANK" && parts.Length >= 3)
     {
@@ -1456,6 +1470,20 @@ async Task HandleClient(Socket client)
             else if (command == "ACL" && parts.Length >= 2 && parts[1].ToUpper() == "WHOAMI")
             {
                 response = "$7\r\ndefault\r\n";
+            }
+            // ACL GETUSER - Get properties of a user
+            else if (command == "ACL" && parts.Length >= 3 && parts[1].ToUpper() == "GETUSER")
+            {
+                string username = parts[2];
+                if (username == "default")
+                {
+                    // Return array: ["flags", []]
+                    response = "*2\r\n$5\r\nflags\r\n*0\r\n";
+                }
+                else
+                {
+                    response = "$-1\r\n";
+                }
             }
             // ZRANK - Get the rank of a member in a sorted set
             else if (command == "ZRANK" && parts.Length >= 3)
