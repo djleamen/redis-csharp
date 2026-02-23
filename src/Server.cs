@@ -325,6 +325,35 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
         }
         response = sb.ToString();
     }
+    // GEODIST - Get distance between two locations
+    else if (command == "GEODIST" && parts.Length >= 4)
+    {
+        string key = parts[1];
+        string member1 = parts[2];
+        string member2 = parts[3];
+
+        if (!dataStore.TryGetValue(key, out StoredValue? geoDistVal) || geoDistVal.SortedSet == null)
+        {
+            response = "$-1\r\n";
+        }
+        else
+        {
+            var e1 = geoDistVal.SortedSet.FirstOrDefault(e => e.Member == member1);
+            var e2 = geoDistVal.SortedSet.FirstOrDefault(e => e.Member == member2);
+            if (e1 == null || e2 == null)
+            {
+                response = "$-1\r\n";
+            }
+            else
+            {
+                var (lon1, lat1) = DecodeGeoHash((long)e1.Score);
+                var (lon2, lat2) = DecodeGeoHash((long)e2.Score);
+                double dist = GeoDistMeters(lat1, lon1, lat2, lon2);
+                string distStr = dist.ToString("F4", System.Globalization.CultureInfo.InvariantCulture);
+                response = $"${distStr.Length}\r\n{distStr}\r\n";
+            }
+        }
+    }
     // ZRANK - Get the rank of a member in a sorted set
     else if (command == "ZRANK" && parts.Length >= 3)
     {
@@ -1299,6 +1328,35 @@ async Task HandleClient(Socket client)
                         sbGeo.Append("*-1\r\n");
                 }
                 response = sbGeo.ToString();
+            }
+            // GEODIST - Get distance between two locations
+            else if (command == "GEODIST" && parts.Length >= 4)
+            {
+                string key = parts[1];
+                string member1 = parts[2];
+                string member2 = parts[3];
+
+                if (!dataStore.TryGetValue(key, out StoredValue? geoDistVal) || geoDistVal.SortedSet == null)
+                {
+                    response = "$-1\r\n";
+                }
+                else
+                {
+                    var e1 = geoDistVal.SortedSet.FirstOrDefault(e => e.Member == member1);
+                    var e2 = geoDistVal.SortedSet.FirstOrDefault(e => e.Member == member2);
+                    if (e1 == null || e2 == null)
+                    {
+                        response = "$-1\r\n";
+                    }
+                    else
+                    {
+                        var (lon1, lat1) = DecodeGeoHash((long)e1.Score);
+                        var (lon2, lat2) = DecodeGeoHash((long)e2.Score);
+                        double dist = GeoDistMeters(lat1, lon1, lat2, lon2);
+                        string distStr = dist.ToString("F4", System.Globalization.CultureInfo.InvariantCulture);
+                        response = $"${distStr.Length}\r\n{distStr}\r\n";
+                    }
+                }
             }
             // ZRANK - Get the rank of a member in a sorted set
             else if (command == "ZRANK" && parts.Length >= 3)
@@ -2938,6 +2996,22 @@ long EncodeGeoHash(double longitude, double latitude)
     }
 
     return result;
+}
+
+/* Calculate distance in meters between two lat/lon points using Haversine formula.
+ * Earth radius matches Redis: 6372797.560856 meters. */
+double GeoDistMeters(double lat1Deg, double lon1Deg, double lat2Deg, double lon2Deg)
+{
+    const double earthRadius = 6372797.560856;
+    double lat1 = lat1Deg * Math.PI / 180.0;
+    double lat2 = lat2Deg * Math.PI / 180.0;
+    double dLat = (lat2Deg - lat1Deg) * Math.PI / 180.0;
+    double dLon = (lon2Deg - lon1Deg) * Math.PI / 180.0;
+    double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2)
+             + Math.Cos(lat1) * Math.Cos(lat2)
+             * Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+    double c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+    return earthRadius * c;
 }
 
 /* Decode a Redis geohash score back to (longitude, latitude). */
