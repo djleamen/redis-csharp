@@ -296,6 +296,32 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             }
         }
     }
+    // GEOPOS - Get longitude and latitude of locations
+    else if (command == "GEOPOS" && parts.Length >= 3)
+    {
+        string key = parts[1];
+        int memberCount = parts.Length - 2;
+        var sb = new StringBuilder();
+        sb.Append($"*{memberCount}\r\n");
+
+        for (int i = 2; i < parts.Length; i++)
+        {
+            string member = parts[i];
+            bool found = false;
+            if (dataStore.TryGetValue(key, out StoredValue? geoVal) && geoVal.SortedSet != null)
+            {
+                var entry = geoVal.SortedSet.FirstOrDefault(e => e.Member == member);
+                if (entry != null)
+                {
+                    sb.Append("*2\r\n$1\r\n0\r\n$1\r\n0\r\n");
+                    found = true;
+                }
+            }
+            if (!found)
+                sb.Append("*-1\r\n");
+        }
+        response = sb.ToString();
+    }
     // ZRANK - Get the rank of a member in a sorted set
     else if (command == "ZRANK" && parts.Length >= 3)
     {
@@ -1241,6 +1267,32 @@ async Task HandleClient(Socket client)
                         response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
                     }
                 }
+            }
+            // GEOPOS - Get longitude and latitude of locations
+            else if (command == "GEOPOS" && parts.Length >= 3)
+            {
+                string key = parts[1];
+                int memberCount = parts.Length - 2;
+                var sbGeo = new StringBuilder();
+                sbGeo.Append($"*{memberCount}\r\n");
+
+                for (int gi = 2; gi < parts.Length; gi++)
+                {
+                    string member = parts[gi];
+                    bool found = false;
+                    if (dataStore.TryGetValue(key, out StoredValue? geoVal) && geoVal.SortedSet != null)
+                    {
+                        var entry = geoVal.SortedSet.FirstOrDefault(e => e.Member == member);
+                        if (entry != null)
+                        {
+                            sbGeo.Append("*2\r\n$1\r\n0\r\n$1\r\n0\r\n");
+                            found = true;
+                        }
+                    }
+                    if (!found)
+                        sbGeo.Append("*-1\r\n");
+                }
+                response = sbGeo.ToString();
             }
             // ZRANK - Get the rank of a member in a sorted set
             else if (command == "ZRANK" && parts.Length >= 3)
