@@ -2870,12 +2870,13 @@ long EncodeGeoHash(double longitude, double latitude)
     lonBits = Math.Max(0, Math.Min((1L << 26) - 1, lonBits));
     latBits = Math.Max(0, Math.Min((1L << 26) - 1, latBits));
 
-    // Interleave: longitude in even bit positions, latitude in odd
+    // Redis interleave64(lat, lon): latitude occupies even bit positions (0,2,4,...),
+    // longitude occupies odd bit positions (1,3,5,...).
     long result = 0;
     for (int i = 0; i < 26; i++)
     {
-        result |= ((lonBits >> i) & 1L) << (2 * i);
-        result |= ((latBits >> i) & 1L) << (2 * i + 1);
+        result |= ((latBits >> i) & 1L) << (2 * i);
+        result |= ((lonBits >> i) & 1L) << (2 * i + 1);
     }
 
     return result;
