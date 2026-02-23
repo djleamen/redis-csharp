@@ -255,15 +255,45 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
         }
         else if (lon < -180.0 || lon > 180.0)
         {
-            response = $"-ERR invalid longitude,latitude pair {lon:F6},{lat:F6}\r\n";
+            response = $"-ERR invalid longitude value {lon:F6}\r\n";
         }
         else if (lat < -85.05112878 || lat > 85.05112878)
         {
-            response = $"-ERR invalid longitude,latitude pair {lon:F6},{lat:F6}\r\n";
+            response = $"-ERR invalid latitude value {lat:F6}\r\n";
         }
         else
         {
-            response = ":1\r\n";
+            string key = parts[1];
+            string member = parts[4];
+            double score = 0;
+            
+            if (!dataStore.ContainsKey(key))
+            {
+                var sortedSet = new List<SortedSetEntry> { new SortedSetEntry(member, score) };
+                dataStore[key] = new StoredValue(sortedSet);
+                response = ":1\r\n";
+            }
+            else if (dataStore.TryGetValue(key, out StoredValue? storedValue) && storedValue.SortedSet != null)
+            {
+                var existingEntry = storedValue.SortedSet.FirstOrDefault(e => e.Member == member);
+                if (existingEntry != null)
+                {
+                    storedValue.SortedSet.Remove(existingEntry);
+                    storedValue.SortedSet.Add(new SortedSetEntry(member, score));
+                    storedValue.SortedSet.Sort();
+                    response = ":0\r\n";
+                }
+                else
+                {
+                    storedValue.SortedSet.Add(new SortedSetEntry(member, score));
+                    storedValue.SortedSet.Sort();
+                    response = ":1\r\n";
+                }
+            }
+            else
+            {
+                response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            }
         }
     }
     // ZRANK - Get the rank of a member in a sorted set
@@ -1171,15 +1201,45 @@ async Task HandleClient(Socket client)
                 }
                 else if (lon < -180.0 || lon > 180.0)
                 {
-                    response = $"-ERR invalid longitude,latitude pair {lon:F6},{lat:F6}\r\n";
+                    response = $"-ERR invalid longitude value {lon:F6}\r\n";
                 }
                 else if (lat < -85.05112878 || lat > 85.05112878)
                 {
-                    response = $"-ERR invalid longitude,latitude pair {lon:F6},{lat:F6}\r\n";
+                    response = $"-ERR invalid latitude value {lat:F6}\r\n";
                 }
                 else
                 {
-                    response = ":1\r\n";
+                    string key = parts[1];
+                    string member = parts[4];
+                    double score = 0;
+                    
+                    if (!dataStore.ContainsKey(key))
+                    {
+                        var sortedSet = new List<SortedSetEntry> { new SortedSetEntry(member, score) };
+                        dataStore[key] = new StoredValue(sortedSet);
+                        response = ":1\r\n";
+                    }
+                    else if (dataStore.TryGetValue(key, out StoredValue? storedVal) && storedVal.SortedSet != null)
+                    {
+                        var existingEntry = storedVal.SortedSet.FirstOrDefault(e => e.Member == member);
+                        if (existingEntry != null)
+                        {
+                            storedVal.SortedSet.Remove(existingEntry);
+                            storedVal.SortedSet.Add(new SortedSetEntry(member, score));
+                            storedVal.SortedSet.Sort();
+                            response = ":0\r\n";
+                        }
+                        else
+                        {
+                            storedVal.SortedSet.Add(new SortedSetEntry(member, score));
+                            storedVal.SortedSet.Sort();
+                            response = ":1\r\n";
+                        }
+                    }
+                    else
+                    {
+                        response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                    }
                 }
             }
             // ZRANK - Get the rank of a member in a sorted set
