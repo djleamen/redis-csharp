@@ -990,6 +990,7 @@ async Task HandleClient(Socket client)
     var transactionQueue = new List<string[]>();
     bool isReplicationConnection = false;
     bool isSubscribedMode = false;
+    bool isAuthenticated = defaultUserFlags.Contains("nopass");
     
     while (true)
     {
@@ -1022,6 +1023,15 @@ async Task HandleClient(Socket client)
                 }
             }
             
+            // Check authentication before processing any command
+            if (!isAuthenticated && command != "AUTH" && command != "HELLO" && command != "QUIT" && command != "RESET")
+            {
+                response = "-NOAUTH Authentication required.\r\n";
+                byte[] noauthBytes = Encoding.UTF8.GetBytes(response);
+                client.Send(noauthBytes);
+                continue;
+            }
+
             // MULTI - Start a transaction
             if (command == "MULTI")
             {
@@ -1540,6 +1550,7 @@ async Task HandleClient(Socket client)
                 {
                     if (defaultUserFlags.Contains("nopass"))
                     {
+                        isAuthenticated = true;
                         response = "+OK\r\n";
                     }
                     else
@@ -1547,7 +1558,10 @@ async Task HandleClient(Socket client)
                         byte[] hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
                         string hash = Convert.ToHexString(hashBytes).ToLower();
                         if (defaultUserPasswords.Contains(hash))
+                        {
+                            isAuthenticated = true;
                             response = "+OK\r\n";
+                        }
                         else
                             response = "-WRONGPASS invalid username-password pair or user is disabled.\r\n";
                     }
