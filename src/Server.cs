@@ -8,65 +8,6 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-/* Blocked client waiting for an element from a list */
-record BlockedClient(string Key, TaskCompletionSource<string?> TaskCompletionSource);
-
-/* Blocked stream reader waiting for new entries */
-record BlockedStreamReader(string[] Keys, string[] Ids, TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?> TaskCompletionSource);
-
-/* Stream entry with ID and key-value pairs */
-record StreamEntry(string Id, Dictionary<string, string> Fields);
-
-/* Sorted set entry with member and score */
-record SortedSetEntry(string Member, double Score) : IComparable<SortedSetEntry>
-{
-    public int CompareTo(SortedSetEntry? other)
-    {
-        if (other == null) return 1;
-        
-        // First compare by score
-        int scoreComparison = Score.CompareTo(other.Score);
-        if (scoreComparison != 0) return scoreComparison;
-        
-        // If scores are equal, compare by member lexicographically
-        return string.Compare(Member, other.Member, StringComparison.Ordinal);
-    }
-}
-
-/* Store value and expiry time */
-record StoredValue
-{
-    public string? Value { get; init; }
-    public List<string>? List { get; init; }
-    public List<StreamEntry>? Stream { get; init; }
-    public List<SortedSetEntry>? SortedSet { get; init; }
-    public long? ExpiryMs { get; init; }
-    
-    public StoredValue(string value, long? expiryMs = null)
-    {
-        Value = value;
-        ExpiryMs = expiryMs;
-    }
-    
-    public StoredValue(List<string> list, long? expiryMs = null)
-    {
-        List = list;
-        ExpiryMs = expiryMs;
-    }
-    
-    public StoredValue(List<StreamEntry> stream, long? expiryMs = null)
-    {
-        Stream = stream;
-        ExpiryMs = expiryMs;
-    }
-    
-    public StoredValue(List<SortedSetEntry> sortedSet, long? expiryMs = null)
-    {
-        SortedSet = sortedSet;
-        ExpiryMs = expiryMs;
-    }
-}
-
 int port = 6379; // Default port
 string? masterHost = null;
 int? masterPort = null;
@@ -2938,4 +2879,63 @@ long EncodeGeoHash(double longitude, double latitude)
     }
 
     return result;
+}
+
+/* Blocked client waiting for an element from a list */
+record BlockedClient(string Key, TaskCompletionSource<string?> TaskCompletionSource);
+
+/* Blocked stream reader waiting for new entries */
+record BlockedStreamReader(string[] Keys, string[] Ids, TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?> TaskCompletionSource);
+
+/* Stream entry with ID and key-value pairs */
+record StreamEntry(string Id, Dictionary<string, string> Fields);
+
+/* Sorted set entry with member and score */
+record SortedSetEntry(string Member, double Score) : IComparable<SortedSetEntry>
+{
+    public int CompareTo(SortedSetEntry? other)
+    {
+        if (other == null) return 1;
+        
+        // First compare by score
+        int scoreComparison = Score.CompareTo(other.Score);
+        if (scoreComparison != 0) return scoreComparison;
+        
+        // If scores are equal, compare by member lexicographically
+        return string.Compare(Member, other.Member, StringComparison.Ordinal);
+    }
+}
+
+/* Store value and expiry time */
+record StoredValue
+{
+    public string? Value { get; init; }
+    public List<string>? List { get; init; }
+    public List<StreamEntry>? Stream { get; init; }
+    public List<SortedSetEntry>? SortedSet { get; init; }
+    public long? ExpiryMs { get; init; }
+    
+    public StoredValue(string value, long? expiryMs = null)
+    {
+        Value = value;
+        ExpiryMs = expiryMs;
+    }
+    
+    public StoredValue(List<string> list, long? expiryMs = null)
+    {
+        List = list;
+        ExpiryMs = expiryMs;
+    }
+    
+    public StoredValue(List<StreamEntry> stream, long? expiryMs = null)
+    {
+        Stream = stream;
+        ExpiryMs = expiryMs;
+    }
+    
+    public StoredValue(List<SortedSetEntry> sortedSet, long? expiryMs = null)
+    {
+        SortedSet = sortedSet;
+        ExpiryMs = expiryMs;
+    }
 }
