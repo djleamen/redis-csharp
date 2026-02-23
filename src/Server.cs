@@ -6,6 +6,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 
 int port = 6379; // Default port
@@ -65,6 +66,10 @@ var replicaAckOffsets = new Dictionary<Socket, long>();
 
 long replicaOffset = 0;
 long masterOffset = 0;
+
+// Default user ACL state
+var defaultUserFlags = new HashSet<string> { "nopass" };
+var defaultUserPasswords = new List<string>();
 
 // Load RDB file if it exists
 LoadRdbFile(Path.Combine(dir, dbfilename));
@@ -404,14 +409,48 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
     {
         response = "$7\r\ndefault\r\n";
     }
+    // ACL SETUSER - Set properties of a user
+    else if (command == "ACL" && parts.Length >= 3 && parts[1].ToUpper() == "SETUSER")
+    {
+        string username = parts[2];
+        if (username == "default")
+        {
+            for (int i = 3; i < parts.Length; i++)
+            {
+                string rule = parts[i];
+                if (rule.StartsWith(">"))
+                {
+                    string password = rule.Substring(1);
+                    byte[] hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
+                    string hash = Convert.ToHexString(hashBytes).ToLower();
+                    if (!defaultUserPasswords.Contains(hash))
+                        defaultUserPasswords.Add(hash);
+                    defaultUserFlags.Remove("nopass");
+                }
+            }
+            response = "+OK\r\n";
+        }
+        else
+        {
+            response = "-ERR unknown user\r\n";
+        }
+    }
     // ACL GETUSER - Get properties of a user
     else if (command == "ACL" && parts.Length >= 3 && parts[1].ToUpper() == "GETUSER")
     {
         string username = parts[2];
         if (username == "default")
         {
-            // Return array: ["flags", ["nopass"], "passwords", []]
-            response = "*4\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n$9\r\npasswords\r\n*0\r\n";
+            var flagsList = defaultUserFlags.ToList();
+            var sbAcl = new StringBuilder();
+            sbAcl.Append("*4\r\n");
+            sbAcl.Append("$5\r\nflags\r\n");
+            sbAcl.Append($"*{flagsList.Count}\r\n");
+            foreach (var f in flagsList) sbAcl.Append($"${f.Length}\r\n{f}\r\n");
+            sbAcl.Append("$9\r\npasswords\r\n");
+            sbAcl.Append($"*{defaultUserPasswords.Count}\r\n");
+            foreach (var p in defaultUserPasswords) sbAcl.Append($"${p.Length}\r\n{p}\r\n");
+            response = sbAcl.ToString();
         }
         else
         {
@@ -1471,14 +1510,48 @@ async Task HandleClient(Socket client)
             {
                 response = "$7\r\ndefault\r\n";
             }
+            // ACL SETUSER - Set properties of a user
+            else if (command == "ACL" && parts.Length >= 3 && parts[1].ToUpper() == "SETUSER")
+            {
+                string username = parts[2];
+                if (username == "default")
+                {
+                    for (int si = 3; si < parts.Length; si++)
+                    {
+                        string rule = parts[si];
+                        if (rule.StartsWith(">"))
+                        {
+                            string password = rule.Substring(1);
+                            byte[] hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(password));
+                            string hash = Convert.ToHexString(hashBytes).ToLower();
+                            if (!defaultUserPasswords.Contains(hash))
+                                defaultUserPasswords.Add(hash);
+                            defaultUserFlags.Remove("nopass");
+                        }
+                    }
+                    response = "+OK\r\n";
+                }
+                else
+                {
+                    response = "-ERR unknown user\r\n";
+                }
+            }
             // ACL GETUSER - Get properties of a user
             else if (command == "ACL" && parts.Length >= 3 && parts[1].ToUpper() == "GETUSER")
             {
                 string username = parts[2];
                 if (username == "default")
                 {
-                    // Return array: ["flags", ["nopass"], "passwords", []]
-                    response = "*4\r\n$5\r\nflags\r\n*1\r\n$6\r\nnopass\r\n$9\r\npasswords\r\n*0\r\n";
+                    var flagsList = defaultUserFlags.ToList();
+                    var sbAcl = new StringBuilder();
+                    sbAcl.Append("*4\r\n");
+                    sbAcl.Append("$5\r\nflags\r\n");
+                    sbAcl.Append($"*{flagsList.Count}\r\n");
+                    foreach (var f in flagsList) sbAcl.Append($"${f.Length}\r\n{f}\r\n");
+                    sbAcl.Append("$9\r\npasswords\r\n");
+                    sbAcl.Append($"*{defaultUserPasswords.Count}\r\n");
+                    foreach (var p in defaultUserPasswords) sbAcl.Append($"${p.Length}\r\n{p}\r\n");
+                    response = sbAcl.ToString();
                 }
                 else
                 {
