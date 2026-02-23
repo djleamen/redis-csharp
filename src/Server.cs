@@ -245,6 +245,11 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             }
         }
     }
+    // GEOADD - Add geospatial item (minimal stage behavior)
+    else if (command == "GEOADD" && parts.Length >= 5)
+    {
+        response = ":1\r\n";
+    }
     // ZRANK - Get the rank of a member in a sorted set
     else if (command == "ZRANK" && parts.Length >= 3)
     {
@@ -1139,6 +1144,11 @@ async Task HandleClient(Socket client)
                         }
                     }
                 }
+            }
+            // GEOADD - Add geospatial item (minimal stage behavior)
+            else if (command == "GEOADD" && parts.Length >= 5)
+            {
+                response = ":1\r\n";
             }
             // ZRANK - Get the rank of a member in a sorted set
             else if (command == "ZRANK" && parts.Length >= 3)
