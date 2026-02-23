@@ -8,6 +8,65 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
+/* Blocked client waiting for an element from a list */
+record BlockedClient(string Key, TaskCompletionSource<string?> TaskCompletionSource);
+
+/* Blocked stream reader waiting for new entries */
+record BlockedStreamReader(string[] Keys, string[] Ids, TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?> TaskCompletionSource);
+
+/* Stream entry with ID and key-value pairs */
+record StreamEntry(string Id, Dictionary<string, string> Fields);
+
+/* Sorted set entry with member and score */
+record SortedSetEntry(string Member, double Score) : IComparable<SortedSetEntry>
+{
+    public int CompareTo(SortedSetEntry? other)
+    {
+        if (other == null) return 1;
+        
+        // First compare by score
+        int scoreComparison = Score.CompareTo(other.Score);
+        if (scoreComparison != 0) return scoreComparison;
+        
+        // If scores are equal, compare by member lexicographically
+        return string.Compare(Member, other.Member, StringComparison.Ordinal);
+    }
+}
+
+/* Store value and expiry time */
+record StoredValue
+{
+    public string? Value { get; init; }
+    public List<string>? List { get; init; }
+    public List<StreamEntry>? Stream { get; init; }
+    public List<SortedSetEntry>? SortedSet { get; init; }
+    public long? ExpiryMs { get; init; }
+    
+    public StoredValue(string value, long? expiryMs = null)
+    {
+        Value = value;
+        ExpiryMs = expiryMs;
+    }
+    
+    public StoredValue(List<string> list, long? expiryMs = null)
+    {
+        List = list;
+        ExpiryMs = expiryMs;
+    }
+    
+    public StoredValue(List<StreamEntry> stream, long? expiryMs = null)
+    {
+        Stream = stream;
+        ExpiryMs = expiryMs;
+    }
+    
+    public StoredValue(List<SortedSetEntry> sortedSet, long? expiryMs = null)
+    {
+        SortedSet = sortedSet;
+        ExpiryMs = expiryMs;
+    }
+}
+
 int port = 6379; // Default port
 string? masterHost = null;
 int? masterPort = null;
@@ -265,7 +324,7 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
         {
             string key = parts[1];
             string member = parts[4];
-            double score = 0;
+            double score = (double)EncodeGeoHash(lon, lat);
             
             if (!dataStore.ContainsKey(key))
             {
@@ -1211,7 +1270,7 @@ async Task HandleClient(Socket client)
                 {
                     string key = parts[1];
                     string member = parts[4];
-                    double score = 0;
+                    double score = (double)EncodeGeoHash(lon, lat);
                     
                     if (!dataStore.ContainsKey(key))
                     {
@@ -2853,61 +2912,30 @@ void LoadRdbFile(string filePath)
     return (str, totalBytesRead);
 }
 
-/* Blocked client waiting for an element from a list */
-record BlockedClient(string Key, TaskCompletionSource<string?> TaskCompletionSource);
-
-/* Blocked stream reader waiting for new entries */
-record BlockedStreamReader(string[] Keys, string[] Ids, TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?> TaskCompletionSource);
-
-/* Stream entry with ID and key-value pairs */
-record StreamEntry(string Id, Dictionary<string, string> Fields);
-
-/* Sorted set entry with member and score */
-record SortedSetEntry(string Member, double Score) : IComparable<SortedSetEntry>
+/* Encode latitude/longitude into a 52-bit Redis geohash integer score.
+ * Longitude bits occupy even positions (0,2,4,...) and latitude bits
+ * occupy odd positions (1,3,5,...). */
+long EncodeGeoHash(double longitude, double latitude)
 {
-    public int CompareTo(SortedSetEntry? other)
-    {
-        if (other == null) return 1;
-        
-        // First compare by score
-        int scoreComparison = Score.CompareTo(other.Score);
-        if (scoreComparison != 0) return scoreComparison;
-        
-        // If scores are equal, compare by member lexicographically
-        return string.Compare(Member, other.Member, StringComparison.Ordinal);
-    }
-}
+    // Normalise to [0, 1]
+    double normLon = (longitude + 180.0) / 360.0;
+    double normLat = (latitude + 85.05112878) / 170.10225756;
 
-/* Store value and expiry time */
-record StoredValue
-{
-    public string? Value { get; init; }
-    public List<string>? List { get; init; }
-    public List<StreamEntry>? Stream { get; init; }
-    public List<SortedSetEntry>? SortedSet { get; init; }
-    public long? ExpiryMs { get; init; }
-    
-    public StoredValue(string value, long? expiryMs = null)
+    // Scale to 26-bit integers
+    long lonBits = (long)(normLon * (1L << 26));
+    long latBits = (long)(normLat * (1L << 26));
+
+    // Clamp to [0, 2^26 - 1]
+    lonBits = Math.Max(0, Math.Min((1L << 26) - 1, lonBits));
+    latBits = Math.Max(0, Math.Min((1L << 26) - 1, latBits));
+
+    // Interleave: longitude in even bit positions, latitude in odd
+    long result = 0;
+    for (int i = 0; i < 26; i++)
     {
-        Value = value;
-        ExpiryMs = expiryMs;
+        result |= ((lonBits >> i) & 1L) << (2 * i);
+        result |= ((latBits >> i) & 1L) << (2 * i + 1);
     }
-    
-    public StoredValue(List<string> list, long? expiryMs = null)
-    {
-        List = list;
-        ExpiryMs = expiryMs;
-    }
-    
-    public StoredValue(List<StreamEntry> stream, long? expiryMs = null)
-    {
-        Stream = stream;
-        ExpiryMs = expiryMs;
-    }
-    
-    public StoredValue(List<SortedSetEntry> sortedSet, long? expiryMs = null)
-    {
-        SortedSet = sortedSet;
-        ExpiryMs = expiryMs;
-    }
+
+    return result;
 }
