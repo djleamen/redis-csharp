@@ -354,6 +354,51 @@ async Task<string> ExecuteCommand(string[] parts, Socket client)
             }
         }
     }
+    // GEOSEARCH - Search for locations within a radius
+    else if (command == "GEOSEARCH" && parts.Length >= 8)
+    {
+        string key = parts[1];
+        // Only support FROMLONLAT ... BYRADIUS ... form
+        if (parts[2].ToUpper() != "FROMLONLAT" || parts[5].ToUpper() != "BYRADIUS")
+        {
+            response = "-ERR unsupported GEOSEARCH options\r\n";
+        }
+        else if (!double.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double centerLon) ||
+                 !double.TryParse(parts[4], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double centerLat) ||
+                 !double.TryParse(parts[6], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double radius))
+        {
+            response = "-ERR invalid arguments\r\n";
+        }
+        else
+        {
+            double unitMultiplier = parts[7].ToLower() switch
+            {
+                "km" => 1000.0,
+                "mi" => 1609.344,
+                "ft" => 0.3048,
+                _    => 1.0   // m (default)
+            };
+            double radiusMeters = radius * unitMultiplier;
+
+            var matches = new List<string>();
+            if (dataStore.TryGetValue(key, out StoredValue? geoSearchVal) && geoSearchVal.SortedSet != null)
+            {
+                foreach (var entry in geoSearchVal.SortedSet)
+                {
+                    var (mLon, mLat) = DecodeGeoHash((long)entry.Score);
+                    double dist = GeoDistMeters(centerLat, centerLon, mLat, mLon);
+                    if (dist <= radiusMeters)
+                        matches.Add(entry.Member);
+                }
+            }
+
+            var sbGs = new StringBuilder();
+            sbGs.Append($"*{matches.Count}\r\n");
+            foreach (var m in matches)
+                sbGs.Append($"${m.Length}\r\n{m}\r\n");
+            response = sbGs.ToString();
+        }
+    }
     // ZRANK - Get the rank of a member in a sorted set
     else if (command == "ZRANK" && parts.Length >= 3)
     {
@@ -1356,6 +1401,50 @@ async Task HandleClient(Socket client)
                         string distStr = dist.ToString("F4", System.Globalization.CultureInfo.InvariantCulture);
                         response = $"${distStr.Length}\r\n{distStr}\r\n";
                     }
+                }
+            }
+            // GEOSEARCH - Search for locations within a radius
+            else if (command == "GEOSEARCH" && parts.Length >= 8)
+            {
+                string key = parts[1];
+                if (parts[2].ToUpper() != "FROMLONLAT" || parts[5].ToUpper() != "BYRADIUS")
+                {
+                    response = "-ERR unsupported GEOSEARCH options\r\n";
+                }
+                else if (!double.TryParse(parts[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double centerLon) ||
+                         !double.TryParse(parts[4], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double centerLat) ||
+                         !double.TryParse(parts[6], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double radius))
+                {
+                    response = "-ERR invalid arguments\r\n";
+                }
+                else
+                {
+                    double unitMultiplier = parts[7].ToLower() switch
+                    {
+                        "km" => 1000.0,
+                        "mi" => 1609.344,
+                        "ft" => 0.3048,
+                        _    => 1.0
+                    };
+                    double radiusMeters = radius * unitMultiplier;
+
+                    var matches = new List<string>();
+                    if (dataStore.TryGetValue(key, out StoredValue? geoSearchVal) && geoSearchVal.SortedSet != null)
+                    {
+                        foreach (var entry in geoSearchVal.SortedSet)
+                        {
+                            var (mLon, mLat) = DecodeGeoHash((long)entry.Score);
+                            double dist = GeoDistMeters(centerLat, centerLon, mLat, mLon);
+                            if (dist <= radiusMeters)
+                                matches.Add(entry.Member);
+                        }
+                    }
+
+                    var sbGs = new StringBuilder();
+                    sbGs.Append($"*{matches.Count}\r\n");
+                    foreach (var m in matches)
+                        sbGs.Append($"${m.Length}\r\n{m}\r\n");
+                    response = sbGs.ToString();
                 }
             }
             // ZRANK - Get the rank of a member in a sorted set
