@@ -11,7 +11,7 @@
 int port = 6379;
 string? masterHost = null;
 int? masterPort = null;
-string dir = "/tmp/redis-files";
+string dir = Directory.GetCurrentDirectory();
 string dbfilename = "dump.rdb";
 
 for (int i = 0; i < args.Length; i++)

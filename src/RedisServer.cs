@@ -257,6 +257,10 @@ class RedisServer
                     {
                         "dir" => _dir,
                         "dbfilename" => _dbFilename,
+                        "appendonly" => "no",
+                        "appenddirname" => "appendonlydir",
+                        "appendfilename" => "appendonly.aof",
+                        "appendfsync" => "everysec",
                         _ => null
                     };
 
