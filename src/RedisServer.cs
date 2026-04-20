@@ -39,6 +39,10 @@ class RedisServer
     private long _replicaOffset;
     private long _masterOffset;
 
+    private readonly ConcurrentDictionary<string, HashSet<Socket>> _keyWatchers = new();
+    private readonly ConcurrentDictionary<Socket, bool> _watchDirty = new();
+    private readonly object _watchLock = new();
+
     private readonly HashSet<string> _defaultUserFlags = new() { "nopass" };
     private readonly List<string> _defaultUserPasswords = new();
 
@@ -146,18 +150,27 @@ class RedisServer
                 {
                     if (inTransaction)
                     {
-                        var responses = new List<string>();
-                        foreach (var queued in transactionQueue)
-                            responses.Add(await ExecuteCommandAsync(queued, client));
+                        bool dirty = _watchDirty.TryGetValue(client, out var d) && d;
+                        if (dirty)
+                        {
+                            response = "*-1\r\n";
+                        }
+                        else
+                        {
+                            var responses = new List<string>();
+                            foreach (var queued in transactionQueue)
+                                responses.Add(await ExecuteCommandAsync(queued, client));
 
-                        var sb = new StringBuilder();
-                        sb.Append($"*{responses.Count}\r\n");
-                        foreach (var r in responses)
-                            sb.Append(r);
+                            var sb = new StringBuilder();
+                            sb.Append($"*{responses.Count}\r\n");
+                            foreach (var r in responses)
+                                sb.Append(r);
 
-                        response = sb.ToString();
+                            response = sb.ToString();
+                        }
                         inTransaction = false;
                         transactionQueue.Clear();
+                        ClearWatchState(client, watchedKeys);
                     }
                     else
                     {
@@ -170,6 +183,7 @@ class RedisServer
                     {
                         inTransaction = false;
                         transactionQueue.Clear();
+                        ClearWatchState(client, watchedKeys);
                         response = "+OK\r\n";
                     }
                     else
@@ -186,7 +200,19 @@ class RedisServer
                     else
                     {
                         if (parts.Length > 1)
-                            watchedKeys.Add(parts[1]);
+                        {
+                            string watchKey = parts[1];
+                            watchedKeys.Add(watchKey);
+                            lock (_watchLock)
+                            {
+                                if (!_keyWatchers.TryGetValue(watchKey, out var watchers))
+                                {
+                                    watchers = new HashSet<Socket>();
+                                    _keyWatchers[watchKey] = watchers;
+                                }
+                                watchers.Add(client);
+                            }
+                        }
                         response = "+OK\r\n";
                     }
                 }
@@ -307,6 +333,7 @@ class RedisServer
 
                     _dataStore[key] = new StoredValue(value, expiryMs);
                     response = "+OK\r\n";
+                    NotifyKeyModified(key, client);
 
                     if (!isReplicationConnection)
                         PropagateToReplicas(input);
@@ -318,14 +345,17 @@ class RedisServer
                 else if (command == "INCR" && parts.Length >= 2)
                 {
                     response = IncrementKey(parts[1]);
+                    NotifyKeyModified(parts[1], client);
                 }
                 else if (command == "ZADD" && parts.Length >= 4)
                 {
                     response = ZAdd(parts[1], parts[2], parts[3]);
+                    NotifyKeyModified(parts[1], client);
                 }
                 else if (command == "GEOADD" && parts.Length >= 5)
                 {
                     response = GeoAdd(parts);
+                    NotifyKeyModified(parts[1], client);
                 }
                 else if (command == "GEOPOS" && parts.Length >= 3)
                 {
@@ -374,6 +404,7 @@ class RedisServer
                 else if (command == "ZREM" && parts.Length >= 3)
                 {
                     response = ZRem(parts[1], parts[2]);
+                    NotifyKeyModified(parts[1], client);
                 }
                 else if (command == "WAIT" && parts.Length >= 3)
                 {
@@ -409,7 +440,10 @@ class RedisServer
                     }
 
                     if (shouldUnblock)
+                    {
                         UnblockWaitingClients(key);
+                        NotifyKeyModified(key, client);
+                    }
                 }
                 else if (command == "LPUSH" && parts.Length >= 3)
                 {
@@ -442,7 +476,10 @@ class RedisServer
                     }
 
                     if (shouldUnblock)
+                    {
                         UnblockWaitingClients(key);
+                        NotifyKeyModified(key, client);
+                    }
                 }
                 else if (command == "LRANGE" && parts.Length >= 4)
                 {
@@ -468,6 +505,7 @@ class RedisServer
                 else if (command == "XADD" && parts.Length >= 4)
                 {
                     response = XAdd(parts);
+                    NotifyKeyModified(parts[1], client);
                 }
                 else if (command == "XREAD" && parts.Length >= 4)
                 {
@@ -553,7 +591,7 @@ class RedisServer
         {
             "PING" => "+PONG\r\n",
             "ECHO" when parts.Length > 1 => $"${parts[1].Length}\r\n{parts[1]}\r\n",
-            "SET" when parts.Length >= 3 => ExecSet(parts),
+            "SET" when parts.Length >= 3 => ExecSet(parts, client),
             "GET" when parts.Length > 1 => GetStringValue(parts[1]),
             "INCR" when parts.Length >= 2 => IncrementKey(parts[1]),
             "ZADD" when parts.Length >= 4 => ZAdd(parts[1], parts[2], parts[3]),
@@ -583,9 +621,10 @@ class RedisServer
     // Individual command implementations
     // -------------------------------------------------------------------------
 
-    private string ExecSet(string[] parts)
+    private string ExecSet(string[] parts, Socket client)
     {
         _dataStore[parts[1]] = new StoredValue(parts[2], ParseSetExpiry(parts));
+        NotifyKeyModified(parts[1], client);
         return "+OK\r\n";
     }
 
@@ -1577,6 +1616,43 @@ class RedisServer
                 _replicaAckOffsets.Remove(r);
             }
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Watch helpers
+    // -------------------------------------------------------------------------
+
+    private void NotifyKeyModified(string key, Socket modifier)
+    {
+        lock (_watchLock)
+        {
+            if (_keyWatchers.TryGetValue(key, out var watchers))
+            {
+                foreach (var watcher in watchers)
+                {
+                    if (watcher != modifier)
+                        _watchDirty[watcher] = true;
+                }
+            }
+        }
+    }
+
+    private void ClearWatchState(Socket client, HashSet<string> watchedKeys)
+    {
+        lock (_watchLock)
+        {
+            foreach (var key in watchedKeys)
+            {
+                if (_keyWatchers.TryGetValue(key, out var watchers))
+                {
+                    watchers.Remove(client);
+                    if (watchers.Count == 0)
+                        _keyWatchers.TryRemove(key, out _);
+                }
+            }
+            _watchDirty.TryRemove(client, out _);
+        }
+        watchedKeys.Clear();
     }
 
     // -------------------------------------------------------------------------
