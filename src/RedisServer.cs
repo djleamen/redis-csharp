@@ -25,6 +25,7 @@ class RedisServer
     private readonly string _appenddirname;
     private readonly string _appendfilename;
     private readonly string _appendfsync;
+    private string? _aofFilePath;
 
     private readonly ConcurrentDictionary<string, StoredValue> _dataStore = new();
 
@@ -81,11 +82,32 @@ class RedisServer
         {
             string aofDir = Path.Combine(_dir, _appenddirname);
             Directory.CreateDirectory(aofDir);
-            string aofFile = Path.Combine(aofDir, $"{_appendfilename}.1.incr.aof");
-            if (!File.Exists(aofFile))
-                File.Create(aofFile).Dispose();
             string manifestFile = Path.Combine(aofDir, $"{_appendfilename}.manifest");
-            File.WriteAllText(manifestFile, $"file {_appendfilename}.1.incr.aof seq 1 type i\n");
+            string aofFileName;
+            if (File.Exists(manifestFile))
+            {
+                // Read manifest to find the active incremental AOF file (type i)
+                string[] lines = File.ReadAllLines(manifestFile);
+                aofFileName = $"{_appendfilename}.1.incr.aof"; // default fallback
+                foreach (string line in lines)
+                {
+                    if (line.Contains("type i"))
+                    {
+                        string[] tokens = line.Split(' ');
+                        if (tokens.Length >= 2 && tokens[0] == "file")
+                            aofFileName = tokens[1];
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                aofFileName = $"{_appendfilename}.1.incr.aof";
+                File.WriteAllText(manifestFile, $"file {aofFileName} seq 1 type i\n");
+            }
+            _aofFilePath = Path.Combine(aofDir, aofFileName);
+            if (!File.Exists(_aofFilePath))
+                File.Create(_aofFilePath).Dispose();
         }
     }
 
@@ -363,6 +385,10 @@ class RedisServer
                     long? expiryMs = ParseSetExpiry(parts);
 
                     _dataStore[key] = new StoredValue(value, expiryMs);
+
+                    if (_appendonly.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                        AppendToAof(parts);
+
                     response = "+OK\r\n";
                     NotifyKeyModified(key, client);
 
@@ -1892,5 +1918,21 @@ class RedisServer
                 return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (ex * 1000);
         }
         return null;
+    }
+
+    private void AppendToAof(string[] parts)
+    {
+        if (_aofFilePath == null) return;
+
+        var sb = new StringBuilder();
+        sb.Append($"*{parts.Length}\r\n");
+        foreach (string part in parts)
+            sb.Append($"${part.Length}\r\n{part}\r\n");
+
+        using var fs = new FileStream(_aofFilePath, FileMode.Append, FileAccess.Write, FileShare.Read);
+        byte[] data = Encoding.UTF8.GetBytes(sb.ToString());
+        fs.Write(data, 0, data.Length);
+        if (_appendfsync.Equals("always", StringComparison.OrdinalIgnoreCase))
+            fs.Flush(flushToDisk: true);
     }
 }
