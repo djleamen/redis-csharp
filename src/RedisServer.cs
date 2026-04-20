@@ -199,12 +199,12 @@ class RedisServer
                     }
                     else
                     {
-                        if (parts.Length > 1)
+                        lock (_watchLock)
                         {
-                            string watchKey = parts[1];
-                            watchedKeys.Add(watchKey);
-                            lock (_watchLock)
+                            for (int i = 1; i < parts.Length; i++)
                             {
+                                string watchKey = parts[i];
+                                watchedKeys.Add(watchKey);
                                 if (!_keyWatchers.TryGetValue(watchKey, out var watchers))
                                 {
                                     watchers = new HashSet<Socket>();
