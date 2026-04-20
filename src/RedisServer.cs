@@ -78,7 +78,13 @@ class RedisServer
         RdbLoader.Load(Path.Combine(dir, dbFilename), _dataStore);
 
         if (_appendonly.Equals("yes", StringComparison.OrdinalIgnoreCase))
-            Directory.CreateDirectory(Path.Combine(_dir, _appenddirname));
+        {
+            string aofDir = Path.Combine(_dir, _appenddirname);
+            Directory.CreateDirectory(aofDir);
+            string aofFile = Path.Combine(aofDir, $"{_appendfilename}.1.incr.aof");
+            if (!File.Exists(aofFile))
+                File.Create(aofFile).Dispose();
+        }
     }
 
     /// <summary>
