@@ -13,6 +13,10 @@ string? masterHost = null;
 int? masterPort = null;
 string dir = Directory.GetCurrentDirectory();
 string dbfilename = "dump.rdb";
+string appendonly = "no";
+string appenddirname = "appendonlydir";
+string appendfilename = "appendonly.aof";
+string appendfsync = "everysec";
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -37,7 +41,24 @@ for (int i = 0; i < args.Length; i++)
     {
         dbfilename = args[i + 1];
     }
+    else if (args[i] == "--appendonly" && i + 1 < args.Length)
+    {
+        appendonly = args[i + 1];
+    }
+    else if (args[i] == "--appenddirname" && i + 1 < args.Length)
+    {
+        appenddirname = args[i + 1];
+    }
+    else if (args[i] == "--appendfilename" && i + 1 < args.Length)
+    {
+        appendfilename = args[i + 1];
+    }
+    else if (args[i] == "--appendfsync" && i + 1 < args.Length)
+    {
+        appendfsync = args[i + 1];
+    }
 }
 
-var server = new RedisServer(port, dir, dbfilename, masterHost, masterPort);
+var server = new RedisServer(port, dir, dbfilename, masterHost, masterPort,
+    appendonly, appenddirname, appendfilename, appendfsync);
 await server.RunAsync();

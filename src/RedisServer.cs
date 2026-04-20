@@ -21,6 +21,11 @@ class RedisServer
     private readonly int? _masterPort;
     private readonly bool _isReplica;
 
+    private readonly string _appendonly;
+    private readonly string _appenddirname;
+    private readonly string _appendfilename;
+    private readonly string _appendfsync;
+
     private readonly ConcurrentDictionary<string, StoredValue> _dataStore = new();
 
     private readonly ConcurrentDictionary<string, Queue<BlockedClient>> _blockedClients = new();
@@ -55,7 +60,9 @@ class RedisServer
     /// <param name="dbFilename">RDB filename.</param>
     /// <param name="masterHost">Master host for replica mode, or <c>null</c> for standalone/master mode.</param>
     /// <param name="masterPort">Master port for replica mode, or <c>null</c> for standalone/master mode.</param>
-    public RedisServer(int port, string dir, string dbFilename, string? masterHost, int? masterPort)
+    public RedisServer(int port, string dir, string dbFilename, string? masterHost, int? masterPort,
+        string appendonly = "no", string appenddirname = "appendonlydir",
+        string appendfilename = "appendonly.aof", string appendfsync = "everysec")
     {
         _port = port;
         _dir = dir;
@@ -63,6 +70,10 @@ class RedisServer
         _masterHost = masterHost;
         _masterPort = masterPort;
         _isReplica = masterHost != null && masterPort.HasValue;
+        _appendonly = appendonly;
+        _appenddirname = appenddirname;
+        _appendfilename = appendfilename;
+        _appendfsync = appendfsync;
 
         RdbLoader.Load(Path.Combine(dir, dbFilename), _dataStore);
     }
@@ -257,10 +268,10 @@ class RedisServer
                     {
                         "dir" => _dir,
                         "dbfilename" => _dbFilename,
-                        "appendonly" => "no",
-                        "appenddirname" => "appendonlydir",
-                        "appendfilename" => "appendonly.aof",
-                        "appendfsync" => "everysec",
+                        "appendonly" => _appendonly,
+                        "appenddirname" => _appenddirname,
+                        "appendfilename" => _appendfilename,
+                        "appendfsync" => _appendfsync,
                         _ => null
                     };
 
