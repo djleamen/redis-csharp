@@ -216,6 +216,11 @@ class RedisServer
                         response = "+OK\r\n";
                     }
                 }
+                else if (command == "UNWATCH")
+                {
+                    ClearWatchState(client, watchedKeys);
+                    response = "+OK\r\n";
+                }
                 else if (inTransaction)
                 {
                     transactionQueue.Add(parts);
