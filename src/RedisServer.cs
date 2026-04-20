@@ -84,6 +84,8 @@ class RedisServer
             string aofFile = Path.Combine(aofDir, $"{_appendfilename}.1.incr.aof");
             if (!File.Exists(aofFile))
                 File.Create(aofFile).Dispose();
+            string manifestFile = Path.Combine(aofDir, $"{_appendfilename}.manifest");
+            File.WriteAllText(manifestFile, $"file {_appendfilename}.1.incr.aof seq 1 type i\n");
         }
     }
 
