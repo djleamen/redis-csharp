@@ -176,6 +176,10 @@ class RedisServer
                         response = "-ERR DISCARD without MULTI\r\n";
                     }
                 }
+                else if (command == "WATCH")
+                {
+                    response = "+OK\r\n";
+                }
                 else if (inTransaction)
                 {
                     transactionQueue.Add(parts);
