@@ -106,7 +106,9 @@ class RedisServer
                 File.WriteAllText(manifestFile, $"file {aofFileName} seq 1 type i\n");
             }
             _aofFilePath = Path.Combine(aofDir, aofFileName);
-            if (!File.Exists(_aofFilePath))
+            if (File.Exists(_aofFilePath))
+                ReplayAof(_aofFilePath);
+            else
                 File.Create(_aofFilePath).Dispose();
         }
     }
@@ -1934,5 +1936,26 @@ class RedisServer
         fs.Write(data, 0, data.Length);
         if (_appendfsync.Equals("always", StringComparison.OrdinalIgnoreCase))
             fs.Flush(flushToDisk: true);
+    }
+
+    private void ReplayAof(string path)
+    {
+        string data = File.ReadAllText(path);
+        int offset = 0;
+        while (offset < data.Length)
+        {
+            var (parts, consumed) = RespParser.TryParseCommand(data.Substring(offset));
+            if (parts == null || consumed == 0)
+                break;
+
+            string command = parts[0].ToUpper();
+            if (command == "SET" && parts.Length >= 3)
+            {
+                long? expiryMs = ParseSetExpiry(parts);
+                _dataStore[parts[1]] = new StoredValue(parts[2], expiryMs);
+            }
+
+            offset += consumed;
+        }
     }
 }
