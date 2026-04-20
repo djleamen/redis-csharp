@@ -76,6 +76,9 @@ class RedisServer
         _appendfsync = appendfsync;
 
         RdbLoader.Load(Path.Combine(dir, dbFilename), _dataStore);
+
+        if (_appendonly.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            Directory.CreateDirectory(Path.Combine(_dir, _appenddirname));
     }
 
     /// <summary>
