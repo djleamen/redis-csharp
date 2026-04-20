@@ -9,7 +9,7 @@ using System.Text;
 /// Supports persistence (RDB), replication, transactions (MULTI/EXEC),
 /// pub/sub, streams, sorted sets, lists, geospatial commands, and ACL authentication.
 /// </summary>
-class RedisServer
+partial class RedisServer
 {
     private const string ReplicationId = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
     private const int ReplicationOffset = 0;
@@ -680,6 +680,9 @@ class RedisServer
     // Individual command implementations
     // -------------------------------------------------------------------------
 
+    /// <summary>
+    /// Executes a SET command within a MULTI/EXEC transaction.
+    /// </summary>
     private string ExecSet(string[] parts, Socket client)
     {
         _dataStore[parts[1]] = new StoredValue(parts[2], ParseSetExpiry(parts));
@@ -687,6 +690,10 @@ class RedisServer
         return "+OK\r\n";
     }
 
+    /// <summary>
+    /// Retrieves the string value for <paramref name="key"/>, returning a RESP bulk string
+    /// or null bulk string if the key is missing or expired.
+    /// </summary>
     private string GetStringValue(string key)
     {
         if (!_dataStore.TryGetValue(key, out StoredValue? sv))
@@ -703,6 +710,10 @@ class RedisServer
             : "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
     }
 
+    /// <summary>
+    /// Atomically increments the integer value stored at <paramref name="key"/> by one.
+    /// Creates the key with value 1 if it does not exist.
+    /// </summary>
     private string IncrementKey(string key)
     {
         if (_dataStore.TryGetValue(key, out StoredValue? sv))
@@ -728,170 +739,6 @@ class RedisServer
         _dataStore[key] = new StoredValue("1");
         return ":1\r\n";
     }
-
-    private string ZAdd(string key, string scoreStr, string member)
-    {
-        if (!double.TryParse(scoreStr, System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out double score))
-        {
-            return "-ERR value is not a valid float\r\n";
-        }
-
-        if (!_dataStore.ContainsKey(key))
-        {
-            _dataStore[key] = new StoredValue(new List<SortedSetEntry> { new(member, score) });
-            return ":1\r\n";
-        }
-
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv) || sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-
-        var existing = sv.SortedSet.FirstOrDefault(e => e.Member == member);
-        if (existing != null)
-        {
-            sv.SortedSet.Remove(existing);
-            sv.SortedSet.Add(new SortedSetEntry(member, score));
-            sv.SortedSet.Sort();
-            return ":0\r\n";
-        }
-
-        sv.SortedSet.Add(new SortedSetEntry(member, score));
-        sv.SortedSet.Sort();
-        return ":1\r\n";
-    }
-
-    private string GeoAdd(string[] parts)
-    {
-        if (!double.TryParse(parts[2], System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out double lon) ||
-            !double.TryParse(parts[3], System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out double lat))
-        {
-            return "-ERR invalid longitude,latitude pair\r\n";
-        }
-
-        if (lon < -180.0 || lon > 180.0)
-            return $"-ERR invalid longitude value {lon:F6}\r\n";
-
-        if (lat < -85.05112878 || lat > 85.05112878)
-            return $"-ERR invalid latitude value {lat:F6}\r\n";
-
-        string key = parts[1];
-        string member = parts[4];
-        double score = GeoUtils.EncodeGeoHash(lon, lat);
-
-        if (!_dataStore.ContainsKey(key))
-        {
-            _dataStore[key] = new StoredValue(new List<SortedSetEntry> { new(member, score) });
-            return ":1\r\n";
-        }
-
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv) || sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-
-        var existing = sv.SortedSet.FirstOrDefault(e => e.Member == member);
-        if (existing != null)
-        {
-            sv.SortedSet.Remove(existing);
-            sv.SortedSet.Add(new SortedSetEntry(member, score));
-            sv.SortedSet.Sort();
-            return ":0\r\n";
-        }
-
-        sv.SortedSet.Add(new SortedSetEntry(member, score));
-        sv.SortedSet.Sort();
-        return ":1\r\n";
-    }
-
-    private string GeoPos(string[] parts)
-    {
-        string key = parts[1];
-        int memberCount = parts.Length - 2;
-        var sb = new StringBuilder();
-        sb.Append($"*{memberCount}\r\n");
-
-        for (int i = 2; i < parts.Length; i++)
-        {
-            string member = parts[i];
-            if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.SortedSet != null)
-            {
-                var entry = sv.SortedSet.FirstOrDefault(e => e.Member == member);
-                if (entry != null)
-                {
-                    var (decLon, decLat) = GeoUtils.DecodeGeoHash((long)entry.Score);
-                    string lonStr = decLon.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
-                    string latStr = decLat.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
-                    sb.Append($"*2\r\n${lonStr.Length}\r\n{lonStr}\r\n${latStr.Length}\r\n{latStr}\r\n");
-                    continue;
-                }
-            }
-            sb.Append("*-1\r\n");
-        }
-
-        return sb.ToString();
-    }
-
-    private string GeoDist(string key, string member1, string member2)
-    {
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv) || sv.SortedSet == null)
-            return "$-1\r\n";
-
-        var e1 = sv.SortedSet.FirstOrDefault(e => e.Member == member1);
-        var e2 = sv.SortedSet.FirstOrDefault(e => e.Member == member2);
-        if (e1 == null || e2 == null)
-            return "$-1\r\n";
-
-        var (lon1, lat1) = GeoUtils.DecodeGeoHash((long)e1.Score);
-        var (lon2, lat2) = GeoUtils.DecodeGeoHash((long)e2.Score);
-        double dist = GeoUtils.DistanceMeters(lat1, lon1, lat2, lon2);
-        string distStr = dist.ToString("F4", System.Globalization.CultureInfo.InvariantCulture);
-        return $"${distStr.Length}\r\n{distStr}\r\n";
-    }
-
-    private string GeoSearch(string[] parts)
-    {
-        string key = parts[1];
-
-        if (parts[2].ToUpper() != "FROMLONLAT" || parts[5].ToUpper() != "BYRADIUS")
-            return "-ERR unsupported GEOSEARCH options\r\n";
-
-        if (!double.TryParse(parts[3], System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out double centerLon) ||
-            !double.TryParse(parts[4], System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out double centerLat) ||
-            !double.TryParse(parts[6], System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out double radius))
-        {
-            return "-ERR invalid arguments\r\n";
-        }
-
-        double unitMultiplier = parts[7].ToLower() switch
-        {
-            "km" => 1000.0,
-            "mi" => 1609.344,
-            "ft" => 0.3048,
-            _ => 1.0
-        };
-        double radiusMeters = radius * unitMultiplier;
-
-        var matches = new List<string>();
-        if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.SortedSet != null)
-        {
-            foreach (var entry in sv.SortedSet)
-            {
-                var (mLon, mLat) = GeoUtils.DecodeGeoHash((long)entry.Score);
-                if (GeoUtils.DistanceMeters(centerLat, centerLon, mLat, mLon) <= radiusMeters)
-                    matches.Add(entry.Member);
-            }
-        }
-
-        var sb = new StringBuilder();
-        sb.Append($"*{matches.Count}\r\n");
-        foreach (var m in matches)
-            sb.Append($"${m.Length}\r\n{m}\r\n");
-        return sb.ToString();
-    }
-
     /// <summary>
     /// Validates credentials against the default user's ACL rules.
     /// Returns the updated authentication flag and the RESP response.
@@ -912,6 +759,10 @@ class RedisServer
             : (false, "-WRONGPASS invalid username-password pair or user is disabled.\r\n");
     }
 
+    /// <summary>
+    /// Applies ACL rules to a user, currently supporting password addition via the
+    /// <c>&gt;password</c> directive on the default user.
+    /// </summary>
     private string AclSetUser(string[] parts)
     {
         string username = parts[2];
@@ -936,6 +787,9 @@ class RedisServer
         return "+OK\r\n";
     }
 
+    /// <summary>
+    /// Returns the ACL flags and password hashes for the specified user.
+    /// </summary>
     private string AclGetUser(string username)
     {
         if (username != "default")
@@ -953,261 +807,10 @@ class RedisServer
         return sb.ToString();
     }
 
-    private string ZRank(string key, string member)
-    {
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return "$-1\r\n";
-
-        if (sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-
-        for (int i = 0; i < sv.SortedSet.Count; i++)
-            if (sv.SortedSet[i].Member == member)
-                return $":{i}\r\n";
-
-        return "$-1\r\n";
-    }
-
-    private string ZRange(string key, string startStr, string stopStr)
-    {
-        if (!int.TryParse(startStr, out int start) || !int.TryParse(stopStr, out int stop))
-            return "-ERR value is not an integer or out of range\r\n";
-
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return "*0\r\n";
-
-        if (sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-
-        int count = sv.SortedSet.Count;
-        if (start < 0) start = Math.Max(0, count + start);
-        if (stop < 0) stop = Math.Max(0, count + stop);
-
-        if (start >= count || start > stop)
-            return "*0\r\n";
-
-        stop = Math.Min(stop, count - 1);
-
-        var sb = new StringBuilder();
-        sb.Append($"*{stop - start + 1}\r\n");
-        for (int i = start; i <= stop; i++)
-            sb.Append($"${sv.SortedSet[i].Member.Length}\r\n{sv.SortedSet[i].Member}\r\n");
-
-        return sb.ToString();
-    }
-
-    private string ZCard(string key)
-    {
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return ":0\r\n";
-
-        return sv.SortedSet == null
-            ? "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
-            : $":{sv.SortedSet.Count}\r\n";
-    }
-
-    private string ZScore(string key, string member)
-    {
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return "$-1\r\n";
-
-        if (sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-
-        var entry = sv.SortedSet.FirstOrDefault(e => e.Member == member);
-        if (entry == null) return "$-1\r\n";
-
-        string scoreStr = entry.Score.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        return $"${scoreStr.Length}\r\n{scoreStr}\r\n";
-    }
-
-    private string ZRem(string key, string member)
-    {
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return ":0\r\n";
-
-        if (sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-
-        var entry = sv.SortedSet.FirstOrDefault(e => e.Member == member);
-        if (entry == null) return ":0\r\n";
-
-        sv.SortedSet.Remove(entry);
-        return ":1\r\n";
-    }
-
-    private async Task<string> WaitForReplicas(string numReplicasStr, string timeoutStr)
-    {
-        if (!int.TryParse(numReplicasStr, out int numReplicas))
-            return "-ERR value is not an integer or out of range\r\n";
-
-        if (!int.TryParse(timeoutStr, out int timeout))
-            return "-ERR timeout is not an integer or out of range\r\n";
-
-        List<Socket> replicas;
-        long currentOffset;
-        lock (_replicaConnectionsLock)
-        {
-            replicas = new List<Socket>(_replicaConnections);
-            currentOffset = _masterOffset;
-        }
-
-        if (replicas.Count == 0)
-            return ":0\r\n";
-
-        if (currentOffset == 0)
-            return $":{replicas.Count}\r\n";
-
-        RequestReplicaAcks(replicas);
-        long deadline = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + timeout;
-        int acked = 0;
-
-        while (true)
-        {
-            lock (_replicaConnectionsLock)
-            {
-                acked = replicas.Count(r =>
-                    _replicaAckOffsets.TryGetValue(r, out long off) && off >= currentOffset);
-            }
-
-            if (acked >= numReplicas || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() >= deadline)
-                break;
-
-            await Task.Delay(10);
-        }
-
-        return $":{acked}\r\n";
-    }
-
-    private string LRange(string key, string startStr, string stopStr)
-    {
-        if (!int.TryParse(startStr, out int start) || !int.TryParse(stopStr, out int stop))
-            return "-ERR value is not an integer or out of range\r\n";
-
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return "*0\r\n";
-
-        if (sv.List == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-
-        var list = sv.List;
-        if (start < 0) start = Math.Max(0, list.Count + start);
-        if (stop < 0) stop = Math.Max(0, list.Count + stop);
-
-        if (start >= list.Count || start > stop)
-            return "*0\r\n";
-
-        int actualStop = Math.Min(stop, list.Count - 1);
-        var sb = new StringBuilder();
-        sb.Append($"*{actualStop - start + 1}\r\n");
-        for (int i = start; i <= actualStop; i++)
-            sb.Append($"${list[i].Length}\r\n{list[i]}\r\n");
-
-        return sb.ToString();
-    }
-
-    private string LLen(string key)
-    {
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return ":0\r\n";
-
-        return sv.List == null
-            ? "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
-            : $":{sv.List.Count}\r\n";
-    }
-
-    private string LPop(string[] parts)
-    {
-        string key = parts[1];
-        int count = 1;
-
-        if (parts.Length >= 3 && (!int.TryParse(parts[2], out count) || count < 1))
-            return "-ERR value is not an integer or out of range\r\n";
-
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return "$-1\r\n";
-
-        if (sv.List == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-
-        if (sv.List.Count == 0)
-            return "$-1\r\n";
-
-        if (parts.Length >= 3)
-        {
-            int toRemove = Math.Min(count, sv.List.Count);
-            var removed = new List<string>();
-            for (int i = 0; i < toRemove; i++)
-            {
-                removed.Add(sv.List[0]);
-                sv.List.RemoveAt(0);
-            }
-            var sb = new StringBuilder();
-            sb.Append($"*{removed.Count}\r\n");
-            foreach (var el in removed)
-                sb.Append($"${el.Length}\r\n{el}\r\n");
-            return sb.ToString();
-        }
-
-        string element = sv.List[0];
-        sv.List.RemoveAt(0);
-        return $"${element.Length}\r\n{element}\r\n";
-    }
-
-    private async Task<string> BLPop(string key, string timeoutStr)
-    {
-        if (!double.TryParse(timeoutStr, out double timeout))
-            return "-ERR timeout is not a float or out of range\r\n";
-
-        if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null && sv.List.Count > 0)
-        {
-            string element = sv.List[0];
-            sv.List.RemoveAt(0);
-            return $"*2\r\n${key.Length}\r\n{key}\r\n${element.Length}\r\n{element}\r\n";
-        }
-
-        var tcs = new TaskCompletionSource<string?>();
-        lock (_blockedClientsLock)
-        {
-            if (!_blockedClients.ContainsKey(key))
-                _blockedClients[key] = new Queue<BlockedClient>();
-            _blockedClients[key].Enqueue(new BlockedClient(key, tcs));
-        }
-
-        Task<string?> elementTask = tcs.Task;
-        Task completed = timeout > 0
-            ? await Task.WhenAny(elementTask, Task.Delay((int)(timeout * 1000)))
-            : (await Task.WhenAny(elementTask), elementTask).Item1;
-
-        string? popped = null;
-        if (completed == elementTask && elementTask.IsCompletedSuccessfully)
-        {
-            popped = elementTask.Result;
-        }
-        else
-        {
-            lock (_blockedClientsLock)
-            {
-                if (_blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue))
-                {
-                    var temp = new Queue<BlockedClient>();
-                    while (queue.Count > 0)
-                    {
-                        var bc = queue.Dequeue();
-                        if (bc.TaskCompletionSource != tcs) temp.Enqueue(bc);
-                    }
-                    if (temp.Count > 0) _blockedClients[key] = temp;
-                    else _blockedClients.TryRemove(key, out _);
-                }
-            }
-            tcs.TrySetResult(null);
-        }
-
-        return popped != null
-            ? $"*2\r\n${key.Length}\r\n{key}\r\n${popped.Length}\r\n{popped}\r\n"
-            : "*-1\r\n";
-    }
-
+    /// <summary>
+    /// Returns the Redis type of the value stored at <paramref name="key"/>:
+    /// string, list, stream, zset, or none.
+    /// </summary>
     private string TypeOf(string key)
     {
         if (!_dataStore.TryGetValue(key, out StoredValue? sv))
@@ -1229,458 +832,14 @@ class RedisServer
         return "+none\r\n";
     }
 
-    private string XAdd(string[] parts)
-    {
-        string key = parts[1];
-        string entryId = parts[2];
-        int fieldCount = parts.Length - 3;
-
-        if (fieldCount % 2 != 0)
-            return "-ERR wrong number of arguments for XADD\r\n";
-
-        long millisTime = 0;
-        long seqNum = 0;
-        string? errorResponse = ResolveStreamId(key, entryId, ref millisTime, ref seqNum, ref entryId);
-
-        if (errorResponse != null)
-            return errorResponse;
-
-        if (millisTime == 0 && seqNum == 0)
-            return "-ERR The ID specified in XADD must be greater than 0-0\r\n";
-
-        if (_dataStore.TryGetValue(key, out StoredValue? existing) && existing.Stream?.Count > 0)
-        {
-            var last = existing.Stream[^1];
-            string[] lp = last.Id.Split('-');
-            long lm = long.Parse(lp[0]), ls = long.Parse(lp[1]);
-
-            if (millisTime < lm || (millisTime == lm && seqNum <= ls))
-                return "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n";
-        }
-
-        var fields = new Dictionary<string, string>();
-        for (int i = 3; i < parts.Length; i += 2)
-            fields[parts[i]] = parts[i + 1];
-
-        var entry = new StreamEntry(entryId, fields);
-
-        if (!_dataStore.ContainsKey(key))
-        {
-            _dataStore[key] = new StoredValue(new List<StreamEntry> { entry });
-        }
-        else if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.Stream != null)
-        {
-            sv.Stream.Add(entry);
-        }
-        else
-        {
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-        }
-
-        UnblockWaitingStreamReaders(key);
-        return $"${entryId.Length}\r\n{entryId}\r\n";
-    }
-
-    private async Task<string> XRead(string[] parts)
-    {
-        int blockTimeout = -1;
-        int streamsIndex = 1;
-
-        if (parts[1].ToUpper() == "BLOCK")
-        {
-            if (parts.Length < 6)
-                return "-ERR wrong number of arguments for XREAD\r\n";
-
-            if (!int.TryParse(parts[2], out blockTimeout))
-                return "-ERR timeout is not an integer or out of range\r\n";
-
-            streamsIndex = 3;
-        }
-
-        if (parts[streamsIndex].ToUpper() != "STREAMS")
-            return "-ERR wrong number of arguments for XREAD\r\n";
-
-        int argsAfterStreams = parts.Length - streamsIndex - 1;
-        if (argsAfterStreams % 2 != 0)
-            return "-ERR wrong number of arguments for XREAD\r\n";
-
-        int streamCount = argsAfterStreams / 2;
-        var keys = new string[streamCount];
-        var ids = new string[streamCount];
-
-        for (int i = 0; i < streamCount; i++)
-        {
-            keys[i] = parts[streamsIndex + 1 + i];
-            ids[i] = parts[streamsIndex + 1 + streamCount + i];
-
-            if (ids[i] == "$")
-            {
-                ids[i] = (_dataStore.TryGetValue(keys[i], out StoredValue? sv) &&
-                          sv.Stream?.Count > 0)
-                    ? sv.Stream[^1].Id
-                    : "0-0";
-            }
-        }
-
-        var results = CollectStreamResults(keys, ids, streamCount);
-
-        if (results.Count == 0 && blockTimeout >= 0)
-        {
-            var tcs = new TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-
-            lock (_blockedStreamReadersLock)
-            {
-                for (int i = 0; i < streamCount; i++)
-                {
-                    if (!_blockedStreamReaders.ContainsKey(keys[i]))
-                        _blockedStreamReaders[keys[i]] = new Queue<BlockedStreamReader>();
-                    _blockedStreamReaders[keys[i]].Enqueue(new BlockedStreamReader(keys, ids, tcs));
-                }
-            }
-
-            Task<List<(string, List<StreamEntry>)>?> entriesTask = tcs.Task;
-            Task completed = blockTimeout > 0
-                ? await Task.WhenAny(entriesTask, Task.Delay(blockTimeout))
-                : (await Task.WhenAny(entriesTask), entriesTask).Item1;
-
-            lock (_blockedStreamReadersLock)
-            {
-                for (int i = 0; i < streamCount; i++)
-                {
-                    if (_blockedStreamReaders.TryGetValue(keys[i], out var q))
-                    {
-                        var temp = new Queue<BlockedStreamReader>();
-                        while (q.Count > 0)
-                        {
-                            var r = q.Dequeue();
-                            if (r.TaskCompletionSource != tcs) temp.Enqueue(r);
-                        }
-                        if (temp.Count > 0) _blockedStreamReaders[keys[i]] = temp;
-                        else _blockedStreamReaders.TryRemove(keys[i], out _);
-                    }
-                }
-            }
-
-            if (entriesTask.IsCompletedSuccessfully && entriesTask.Result != null)
-                results = entriesTask.Result;
-            else
-                return "*-1\r\n";
-        }
-
-        if (results.Count == 0)
-            return "*-1\r\n";
-
-        return BuildXReadResponse(results);
-    }
-
-    private string XRange(string key, string startId, string endId)
-    {
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return "*0\r\n";
-
-        if (sv.Stream == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
-
-        var (startMs, startSeq) = RespParser.ParseStreamId(startId, true);
-        var (endMs, endSeq) = RespParser.ParseStreamId(endId, false);
-
-        var matching = new List<StreamEntry>();
-        foreach (var entry in sv.Stream)
-        {
-            string[] p = entry.Id.Split('-');
-            long em = long.Parse(p[0]), es = long.Parse(p[1]);
-
-            bool inRange = (em > startMs && em < endMs)
-                || (em == startMs && em == endMs && es >= startSeq && es <= endSeq)
-                || (em == startMs && em != endMs && es >= startSeq)
-                || (em == endMs && em != startMs && es <= endSeq);
-
-            if (inRange) matching.Add(entry);
-        }
-
-        return BuildStreamEntryArray(matching);
-    }
-
-    private string Publish(string channel, string message)
-    {
-        int count = 0;
-        lock (_subscriptionsLock)
-        {
-            if (_channelSubscribers.TryGetValue(channel, out HashSet<Socket>? subs))
-            {
-                count = subs.Count;
-                string msg = $"*3\r\n$7\r\nmessage\r\n${channel.Length}\r\n{channel}\r\n${message.Length}\r\n{message}\r\n";
-                byte[] msgBytes = Encoding.UTF8.GetBytes(msg);
-
-                foreach (Socket sub in subs.ToList())
-                {
-                    try { sub.Send(msgBytes); }
-                    catch { /* subscriber disconnected */ }
-                }
-            }
-        }
-        return $":{count}\r\n";
-    }
-
-    private void Subscribe(Socket client, string[] channels, ref bool isSubscribedMode)
-    {
-        lock (_subscriptionsLock)
-        {
-            if (!_clientSubscriptions.ContainsKey(client))
-                _clientSubscriptions[client] = new HashSet<string>();
-
-            foreach (string channel in channels)
-            {
-                if (!_channelSubscribers.ContainsKey(channel))
-                    _channelSubscribers[channel] = new HashSet<Socket>();
-
-                _channelSubscribers[channel].Add(client);
-                _clientSubscriptions[client].Add(channel);
-
-                int subCount = _clientSubscriptions[client].Count;
-                string resp = $"*3\r\n$9\r\nsubscribe\r\n${channel.Length}\r\n{channel}\r\n:{subCount}\r\n";
-                client.Send(Encoding.UTF8.GetBytes(resp));
-            }
-
-            isSubscribedMode = true;
-        }
-    }
-
-    private void Unsubscribe(Socket client, string[] channels, ref bool isSubscribedMode)
-    {
-        lock (_subscriptionsLock)
-        {
-            foreach (string channel in channels)
-            {
-                if (_channelSubscribers.TryGetValue(channel, out HashSet<Socket>? subs))
-                {
-                    subs.Remove(client);
-                    if (subs.Count == 0) _channelSubscribers.TryRemove(channel, out _);
-                }
-
-                _clientSubscriptions.TryGetValue(client, out HashSet<string>? clientChans);
-                clientChans?.Remove(channel);
-
-                int remaining = _clientSubscriptions.TryGetValue(client, out HashSet<string>? c) ? c.Count : 0;
-                string resp = $"*3\r\n$11\r\nunsubscribe\r\n${channel.Length}\r\n{channel}\r\n:{remaining}\r\n";
-                client.Send(Encoding.UTF8.GetBytes(resp));
-            }
-
-            if (!_clientSubscriptions.TryGetValue(client, out var remaining2) || remaining2.Count == 0)
-            {
-                isSubscribedMode = false;
-                _clientSubscriptions.TryRemove(client, out _);
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Replication
-    // -------------------------------------------------------------------------
-
-    /// <summary>
-    /// Connects to the master server, performs the replication handshake (PING, REPLCONF, PSYNC),
-    /// receives the initial RDB snapshot, and then continuously processes propagated commands.
-    /// </summary>
-    private async Task ConnectToMasterAsync(string host, int masterPort, int replicaPort)
-    {
-        try
-        {
-            var masterClient = new TcpClient();
-            await masterClient.ConnectAsync(host, masterPort);
-            NetworkStream stream = masterClient.GetStream();
-            byte[] buffer = new byte[4096];
-
-            await SendAndReceiveAsync(stream, buffer, "*1\r\n$4\r\nPING\r\n");
-
-            string portStr = replicaPort.ToString();
-            await SendAndReceiveAsync(stream, buffer,
-                $"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${portStr.Length}\r\n{portStr}\r\n");
-
-            await SendAndReceiveAsync(stream, buffer,
-                "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n");
-
-            await stream.WriteAsync(Encoding.UTF8.GetBytes("*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"));
-
-            int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-            string fullResponse = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-
-            int fullresyncEnd = fullResponse.IndexOf("\r\n");
-            if (fullresyncEnd == -1) return;
-
-            int rdbStart = fullresyncEnd + 2;
-
-            while (rdbStart >= fullResponse.Length || fullResponse[rdbStart] != '$')
-            {
-                int n = await stream.ReadAsync(buffer, bytesRead, buffer.Length - bytesRead);
-                if (n == 0) return;
-                bytesRead += n;
-                fullResponse = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-            }
-
-            int rdbLenEnd = fullResponse.IndexOf("\r\n", rdbStart);
-            while (rdbLenEnd == -1)
-            {
-                int n = await stream.ReadAsync(buffer, bytesRead, buffer.Length - bytesRead);
-                if (n == 0) return;
-                bytesRead += n;
-                fullResponse = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                rdbLenEnd = fullResponse.IndexOf("\r\n", rdbStart);
-            }
-
-            string rdbLenStr = fullResponse.Substring(rdbStart + 1, rdbLenEnd - rdbStart - 1);
-            if (!int.TryParse(rdbLenStr, out int rdbLength)) return;
-
-            int rdbDataStart = Encoding.UTF8.GetByteCount(fullResponse.Substring(0, rdbLenEnd)) + 2;
-            int rdbDataEnd = rdbDataStart + rdbLength;
-
-            while (bytesRead < rdbDataEnd)
-            {
-                int n = await stream.ReadAsync(buffer, bytesRead, buffer.Length - bytesRead);
-                if (n == 0) return;
-                bytesRead += n;
-            }
-
-            var commandBuffer = new StringBuilder();
-            if (bytesRead > rdbDataEnd)
-                commandBuffer.Append(Encoding.UTF8.GetString(buffer, rdbDataEnd, bytesRead - rdbDataEnd));
-
-            if (commandBuffer.Length > 0)
-                await ProcessBufferedCommandsAsync(commandBuffer, stream);
-
-            while (true)
-            {
-                bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                if (bytesRead == 0) break;
-
-                commandBuffer.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
-                await ProcessBufferedCommandsAsync(commandBuffer, stream);
-            }
-        }
-        catch { }
-    }
-
-    /// <summary>
-    /// Writes a RESP command to the stream and reads (and discards) a single response frame.
-    /// Used during the replication handshake sequence.
-    /// </summary>
-    private static async Task SendAndReceiveAsync(NetworkStream stream, byte[] buffer, string command)
-    {
-        await stream.WriteAsync(Encoding.UTF8.GetBytes(command));
-        int bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length));
-        if (bytesRead == 0)
-            throw new IOException("Connection closed by remote host");
-    }
-
-    /// <summary>
-    /// Drains all complete RESP commands from <paramref name="buffer"/> and processes each one.
-    /// Partial data at the end of the buffer is left for the next read.
-    /// </summary>
-    private async Task ProcessBufferedCommandsAsync(StringBuilder buffer, NetworkStream stream)
-    {
-        string data = buffer.ToString();
-        int processed = 0;
-
-        while (true)
-        {
-            string remaining = data.Substring(processed);
-            if (remaining.Length == 0) break;
-
-            var (cmd, length) = RespParser.TryParseCommand(remaining);
-            if (cmd == null || length == 0) break;
-
-            await ProcessReplicatedCommandAsync(cmd, stream, length);
-            processed += length;
-        }
-
-        if (processed > 0)
-            buffer.Remove(0, processed);
-    }
-
-    /// <summary>
-    /// Applies a single command propagated from the master and advances the replica offset.
-    /// Responds to REPLCONF GETACK with the offset captured <em>before</em> processing the command,
-    /// matching Redis's protocol where GETACK itself is counted only after the reply is sent.
-    /// </summary>
-    private async Task ProcessReplicatedCommandAsync(string[] parts, NetworkStream stream, int commandLength)
-    {
-        if (parts.Length == 0) return;
-
-        string command = parts[0].ToUpper();
-        long offsetBefore = _replicaOffset;
-
-        if (command == "REPLCONF" && parts.Length >= 3 && parts[1].ToUpper() == "GETACK")
-        {
-            string ack = $"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${offsetBefore.ToString().Length}\r\n{offsetBefore}\r\n";
-            await stream.WriteAsync(Encoding.UTF8.GetBytes(ack));
-            await stream.FlushAsync();
-        }
-
-        if (command == "SET" && parts.Length >= 3)
-        {
-            long? expiry = ParseSetExpiry(parts);
-            _dataStore[parts[1]] = new StoredValue(parts[2], expiry);
-        }
-
-        _replicaOffset += commandLength;
-    }
-
-    /// <summary>
-    /// Sends the current raw command bytes to all connected replica sockets,
-    /// removes disconnected replicas, and advances the master replication offset.
-    /// </summary>
-    private void PropagateToReplicas(string command)
-    {
-        byte[] bytes = Encoding.UTF8.GetBytes(command);
-        lock (_replicaConnectionsLock)
-        {
-            var disconnected = new List<Socket>();
-            foreach (var replica in _replicaConnections)
-            {
-                try { replica.Send(bytes); }
-                catch { disconnected.Add(replica); }
-            }
-
-            foreach (var r in disconnected)
-            {
-                _replicaConnections.Remove(r);
-                _replicaAckOffsets.Remove(r);
-            }
-
-            if (_replicaConnections.Count > 0)
-                _masterOffset += bytes.Length;
-        }
-    }
-
-    /// <summary>
-    /// Sends a REPLCONF GETACK * command to all specified replicas,
-    /// removing any that have disconnected.
-    /// </summary>
-    private void RequestReplicaAcks(IEnumerable<Socket> replicas)
-    {
-        byte[] getack = Encoding.UTF8.GetBytes("*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n");
-        lock (_replicaConnectionsLock)
-        {
-            var disconnected = new List<Socket>();
-            foreach (var r in replicas)
-            {
-                try { r.Send(getack); }
-                catch { disconnected.Add(r); }
-            }
-
-            foreach (var r in disconnected)
-            {
-                _replicaConnections.Remove(r);
-                _replicaAckOffsets.Remove(r);
-            }
-        }
-    }
-
     // -------------------------------------------------------------------------
     // Watch helpers
     // -------------------------------------------------------------------------
 
+    /// <summary>
+    /// Marks all clients watching <paramref name="key"/> (other than <paramref name="modifier"/>)
+    /// as dirty so their next EXEC will abort.
+    /// </summary>
     private void NotifyKeyModified(string key, Socket modifier)
     {
         lock (_watchLock)
@@ -1696,6 +855,9 @@ class RedisServer
         }
     }
 
+    /// <summary>
+    /// Removes <paramref name="client"/> from all key-watch sets and clears its dirty flag.
+    /// </summary>
     private void ClearWatchState(Socket client, HashSet<string> watchedKeys)
     {
         lock (_watchLock)
@@ -1714,194 +876,6 @@ class RedisServer
         watchedKeys.Clear();
     }
 
-    // -------------------------------------------------------------------------
-    // Blocking command helpers
-    // -------------------------------------------------------------------------
-
-    /// <summary>
-    /// Wakes up blocked BLPOP clients waiting on <paramref name="key"/>,
-    /// delivering the first available list element to each one in order.
-    /// </summary>
-    private void UnblockWaitingClients(string key)
-    {
-        lock (_blockedClientsLock)
-        {
-            while (_blockedClients.TryGetValue(key, out var queue) && queue.Count > 0)
-            {
-                if (!_dataStore.TryGetValue(key, out StoredValue? sv) || sv.List == null || sv.List.Count == 0)
-                    break;
-
-                var blocked = queue.Dequeue();
-                string element = sv.List[0];
-                sv.List.RemoveAt(0);
-                blocked.TaskCompletionSource.SetResult(element);
-
-                if (queue.Count == 0)
-                    _blockedClients.TryRemove(key, out _);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Wakes up blocked XREAD clients waiting on <paramref name="key"/> with newly available entries.
-    /// </summary>
-    private void UnblockWaitingStreamReaders(string key)
-    {
-        lock (_blockedStreamReadersLock)
-        {
-            if (!_blockedStreamReaders.TryGetValue(key, out var queue) || queue.Count == 0)
-                return;
-
-            var toUnblock = new List<BlockedStreamReader>();
-            while (queue.Count > 0)
-                toUnblock.Add(queue.Dequeue());
-            _blockedStreamReaders.TryRemove(key, out _);
-
-            foreach (var reader in toUnblock)
-            {
-                var results = CollectStreamResults(reader.Keys, reader.Ids, reader.Keys.Length);
-                if (results.Count > 0)
-                    reader.TaskCompletionSource.TrySetResult(results);
-            }
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Stream helpers
-    // -------------------------------------------------------------------------
-
-    /// <summary>
-    /// Queries each specified stream for entries newer than the given IDs and returns the results.
-    /// </summary>
-    private List<(string key, List<StreamEntry> entries)> CollectStreamResults(
-        string[] keys, string[] ids, int count)
-    {
-        var results = new List<(string, List<StreamEntry>)>();
-
-        for (int i = 0; i < count; i++)
-        {
-            if (!_dataStore.TryGetValue(keys[i], out StoredValue? sv) || sv.Stream == null)
-                continue;
-
-            var (startMs, startSeq) = RespParser.ParseStreamId(ids[i], true);
-            var matching = new List<StreamEntry>();
-
-            foreach (var entry in sv.Stream)
-            {
-                string[] p = entry.Id.Split('-');
-                long em = long.Parse(p[0]), es = long.Parse(p[1]);
-                if (em > startMs || (em == startMs && es > startSeq))
-                    matching.Add(entry);
-            }
-
-            if (matching.Count > 0)
-                results.Add((keys[i], matching));
-        }
-
-        return results;
-    }
-
-    /// <summary>
-    /// Builds the nested RESP array response for XREAD results.
-    /// </summary>
-    private static string BuildXReadResponse(List<(string key, List<StreamEntry> entries)> results)
-    {
-        var sb = new StringBuilder();
-        sb.Append($"*{results.Count}\r\n");
-
-        foreach (var (key, entries) in results)
-        {
-            sb.Append("*2\r\n");
-            sb.Append($"${key.Length}\r\n{key}\r\n");
-            sb.Append(BuildStreamEntryArray(entries));
-        }
-
-        return sb.ToString();
-    }
-
-    /// <summary>
-    /// Builds a RESP array of stream entries (each entry is a two-element array of ID and field map).
-    /// </summary>
-    private static string BuildStreamEntryArray(List<StreamEntry> entries)
-    {
-        var sb = new StringBuilder();
-        sb.Append($"*{entries.Count}\r\n");
-
-        foreach (var entry in entries)
-        {
-            sb.Append("*2\r\n");
-            sb.Append($"${entry.Id.Length}\r\n{entry.Id}\r\n");
-            sb.Append($"*{entry.Fields.Count * 2}\r\n");
-
-            foreach (var kvp in entry.Fields)
-            {
-                sb.Append($"${kvp.Key.Length}\r\n{kvp.Key}\r\n");
-                sb.Append($"${kvp.Value.Length}\r\n{kvp.Value}\r\n");
-            }
-        }
-
-        return sb.ToString();
-    }
-
-    /// <summary>
-    /// Resolves the stream entry ID (or wildcard) for XADD, computing the actual milliseconds
-    /// and sequence number and updating <paramref name="resolvedId"/>.
-    /// </summary>
-    /// <returns>An error RESP string on failure, or <c>null</c> on success.</returns>
-    private string? ResolveStreamId(string key, string rawId,
-        ref long millisTime, ref long seqNum, ref string resolvedId)
-    {
-        if (rawId == "*")
-        {
-            millisTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            seqNum = 0;
-
-            if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.Stream?.Count > 0)
-            {
-                var last = sv.Stream[^1];
-                string[] lp = last.Id.Split('-');
-                long lm = long.Parse(lp[0]), ls = long.Parse(lp[1]);
-
-                if (millisTime == lm) seqNum = ls + 1;
-                else if (millisTime <= lm) { millisTime = lm; seqNum = ls + 1; }
-            }
-
-            resolvedId = $"{millisTime}-{seqNum}";
-            return null;
-        }
-
-        string[] idParts = rawId.Split('-');
-        if (idParts.Length != 2 || !long.TryParse(idParts[0], out millisTime))
-            return "-ERR Invalid stream ID specified as stream command argument\r\n";
-
-        if (idParts[1] == "*")
-        {
-            seqNum = 0;
-            if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.Stream?.Count > 0)
-            {
-                var last = sv.Stream[^1];
-                string[] lp = last.Id.Split('-');
-                long lm = long.Parse(lp[0]), ls = long.Parse(lp[1]);
-
-                if (millisTime == lm) seqNum = ls + 1;
-                else if (millisTime == 0) seqNum = 1;
-            }
-            else if (millisTime == 0)
-            {
-                seqNum = 1;
-            }
-
-            resolvedId = $"{millisTime}-{seqNum}";
-            return null;
-        }
-
-        if (!long.TryParse(idParts[1], out seqNum))
-            return "-ERR Invalid stream ID specified as stream command argument\r\n";
-
-        return null;
-    }
-
-    // -------------------------------------------------------------------------
     // Utility helpers
     // -------------------------------------------------------------------------
 
@@ -1922,6 +896,10 @@ class RedisServer
         return null;
     }
 
+    /// <summary>
+    /// Appends a command to the append-only file in RESP format, optionally fsyncing
+    /// to disk when <c>appendfsync</c> is set to <c>always</c>.
+    /// </summary>
     private void AppendToAof(string[] parts)
     {
         if (_aofFilePath == null) return;
@@ -1938,6 +916,10 @@ class RedisServer
             fs.Flush(flushToDisk: true);
     }
 
+    /// <summary>
+    /// Replays all commands stored in the AOF file at <paramref name="path"/> into the
+    /// in-memory data store during startup.
+    /// </summary>
     private void ReplayAof(string path)
     {
         string data = File.ReadAllText(path);
