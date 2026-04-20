@@ -96,6 +96,7 @@ class RedisServer
     {
         bool inTransaction = false;
         var transactionQueue = new List<string[]>();
+        var watchedKeys = new HashSet<string>();
         bool isReplicationConnection = false;
         bool isSubscribedMode = false;
         bool isAuthenticated = _defaultUserFlags.Contains("nopass");
@@ -178,7 +179,16 @@ class RedisServer
                 }
                 else if (command == "WATCH")
                 {
-                    response = "+OK\r\n";
+                    if (inTransaction)
+                    {
+                        response = "-ERR WATCH inside MULTI is not allowed\r\n";
+                    }
+                    else
+                    {
+                        if (parts.Length > 1)
+                            watchedKeys.Add(parts[1]);
+                        response = "+OK\r\n";
+                    }
                 }
                 else if (inTransaction)
                 {
