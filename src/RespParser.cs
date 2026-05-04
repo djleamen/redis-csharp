@@ -121,9 +121,8 @@ static class RespParser
 
         string[] parts = id.Split('-');
         long millis = long.Parse(parts[0]);
-        long seq = parts.Length == 1
-            ? (isStart ? 0L : long.MaxValue)
-            : long.Parse(parts[1]);
+        long defaultSeq = isStart ? 0L : long.MaxValue;
+        long seq = parts.Length == 1 ? defaultSeq : long.Parse(parts[1]);
 
         return (millis, seq);
     }
