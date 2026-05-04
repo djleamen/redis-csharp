@@ -62,95 +62,149 @@ partial class RedisServer
 
     private async Task<string> XRead(string[] parts)
     {
-        int blockTimeout = -1;
-        int streamsIndex = 1;
+        if (!TryParseXReadArgs(parts, out int blockTimeout, out int streamCount, out string[] keys, out string[] ids, out string? error))
+            return error!;
 
-        if (parts[1].ToUpper() == "BLOCK")
-        {
-            if (parts.Length < 6)
-                return "-ERR wrong number of arguments for XREAD\r\n";
-
-            if (!int.TryParse(parts[2], out blockTimeout))
-                return "-ERR timeout is not an integer or out of range\r\n";
-
-            streamsIndex = 3;
-        }
-
-        if (parts[streamsIndex].ToUpper() != "STREAMS")
-            return "-ERR wrong number of arguments for XREAD\r\n";
-
-        int argsAfterStreams = parts.Length - streamsIndex - 1;
-        if (argsAfterStreams % 2 != 0)
-            return "-ERR wrong number of arguments for XREAD\r\n";
-
-        int streamCount = argsAfterStreams / 2;
-        var keys = new string[streamCount];
-        var ids = new string[streamCount];
-
-        for (int i = 0; i < streamCount; i++)
-        {
-            keys[i] = parts[streamsIndex + 1 + i];
-            ids[i] = parts[streamsIndex + 1 + streamCount + i];
-
-            if (ids[i] == "$")
-            {
-                ids[i] = (_dataStore.TryGetValue(keys[i], out StoredValue? sv) &&
-                          sv.Stream?.Count > 0)
-                    ? sv.Stream[^1].Id
-                    : "0-0";
-            }
-        }
+        ResolveCurrentStreamIds(keys, ids, streamCount);
 
         var results = CollectStreamResults(keys, ids, streamCount);
 
         if (results.Count == 0 && blockTimeout >= 0)
-        {
-            var tcs = new TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-
-            lock (_blockedStreamReadersLock)
-            {
-                for (int i = 0; i < streamCount; i++)
-                {
-                    if (!_blockedStreamReaders.ContainsKey(keys[i]))
-                        _blockedStreamReaders[keys[i]] = new Queue<BlockedStreamReader>();
-                    _blockedStreamReaders[keys[i]].Enqueue(new BlockedStreamReader(keys, ids, tcs));
-                }
-            }
-
-            Task<List<(string, List<StreamEntry>)>?> entriesTask = tcs.Task;
-            Task completed = blockTimeout > 0
-                ? await Task.WhenAny(entriesTask, Task.Delay(blockTimeout))
-                : (await Task.WhenAny(entriesTask), entriesTask).Item1;
-
-            lock (_blockedStreamReadersLock)
-            {
-                for (int i = 0; i < streamCount; i++)
-                {
-                    if (_blockedStreamReaders.TryGetValue(keys[i], out var q))
-                    {
-                        var temp = new Queue<BlockedStreamReader>();
-                        while (q.Count > 0)
-                        {
-                            var r = q.Dequeue();
-                            if (r.TaskCompletionSource != tcs) temp.Enqueue(r);
-                        }
-                        if (temp.Count > 0) _blockedStreamReaders[keys[i]] = temp;
-                        else _blockedStreamReaders.TryRemove(keys[i], out _);
-                    }
-                }
-            }
-
-            if (entriesTask.IsCompletedSuccessfully && entriesTask.Result != null)
-                results = entriesTask.Result;
-            else
-                return "*-1\r\n";
-        }
+            results = await AwaitBlockedXRead(keys, ids, streamCount, blockTimeout) ?? [];
 
         if (results.Count == 0)
             return "*-1\r\n";
 
         return BuildXReadResponse(results);
+    }
+
+    /// <summary>
+    /// Parses XREAD arguments: optional BLOCK timeout, STREAMS keyword, stream keys and IDs.
+    /// Returns false and sets <paramref name="error"/> on invalid input.
+    /// </summary>
+    private static bool TryParseXReadArgs(string[] parts, out int blockTimeout, out int streamCount,
+        out string[] keys, out string[] ids, out string? error)
+    {
+        blockTimeout = -1;
+        int streamsIndex = 1;
+        streamCount = 0;
+        keys = [];
+        ids = [];
+
+        if (parts[1].ToUpper() == "BLOCK")
+        {
+            if (parts.Length < 6)
+            {
+                error = "-ERR wrong number of arguments for XREAD\r\n";
+                return false;
+            }
+            if (!int.TryParse(parts[2], out blockTimeout))
+            {
+                error = "-ERR timeout is not an integer or out of range\r\n";
+                return false;
+            }
+            streamsIndex = 3;
+        }
+
+        if (parts[streamsIndex].ToUpper() != "STREAMS")
+        {
+            error = "-ERR wrong number of arguments for XREAD\r\n";
+            return false;
+        }
+
+        int argsAfterStreams = parts.Length - streamsIndex - 1;
+        if (argsAfterStreams % 2 != 0)
+        {
+            error = "-ERR wrong number of arguments for XREAD\r\n";
+            return false;
+        }
+
+        streamCount = argsAfterStreams / 2;
+        keys = new string[streamCount];
+        ids = new string[streamCount];
+
+        for (int i = 0; i < streamCount; i++)
+        {
+            keys[i] = parts[streamsIndex + 1 + i];
+            ids[i] = parts[streamsIndex + 1 + streamCount + i];
+        }
+
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Replaces any <c>$</c> ID placeholder in <paramref name="ids"/> with the actual last
+    /// entry ID of the corresponding stream, or <c>0-0</c> if the stream is empty.
+    /// </summary>
+    private void ResolveCurrentStreamIds(string[] keys, string[] ids, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            if (ids[i] != "$")
+                continue;
+
+            ids[i] = (_dataStore.TryGetValue(keys[i], out StoredValue? sv) && sv.Stream?.Count > 0)
+                ? sv.Stream[^1].Id
+                : "0-0";
+        }
+    }
+
+    /// <summary>
+    /// Registers blocked XREAD waiters, waits for new entries or timeout, then cleans up
+    /// and returns the collected results, or <c>null</c> on timeout.
+    /// </summary>
+    private async Task<List<(string key, List<StreamEntry> entries)>?> AwaitBlockedXRead(
+        string[] keys, string[] ids, int streamCount, int blockTimeout)
+    {
+        var tcs = new TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        lock (_blockedStreamReadersLock)
+        {
+            for (int i = 0; i < streamCount; i++)
+            {
+                if (!_blockedStreamReaders.ContainsKey(keys[i]))
+                    _blockedStreamReaders[keys[i]] = new Queue<BlockedStreamReader>();
+                _blockedStreamReaders[keys[i]].Enqueue(new BlockedStreamReader(keys, ids, tcs));
+            }
+        }
+
+        Task<List<(string, List<StreamEntry>)>?> entriesTask = tcs.Task;
+        _ = blockTimeout > 0
+            ? await Task.WhenAny(entriesTask, Task.Delay(blockTimeout))
+            : (await Task.WhenAny(entriesTask), entriesTask).Item1;
+
+        CancelBlockedXReadWaiters(keys, streamCount, tcs);
+
+        if (entriesTask.IsCompletedSuccessfully && entriesTask.Result != null)
+            return entriesTask.Result;
+        return null;
+    }
+
+    /// <summary>
+    /// Removes the TCS associated with a timed-out or cancelled XREAD from all blocked-reader queues.
+    /// </summary>
+    private void CancelBlockedXReadWaiters(string[] keys, int streamCount,
+        TaskCompletionSource<List<(string key, List<StreamEntry> entries)>?> tcs)
+    {
+        lock (_blockedStreamReadersLock)
+        {
+            for (int i = 0; i < streamCount; i++)
+            {
+                if (_blockedStreamReaders.TryGetValue(keys[i], out var q))
+                {
+                    var temp = new Queue<BlockedStreamReader>();
+                    while (q.Count > 0)
+                    {
+                        var r = q.Dequeue();
+                        if (r.TaskCompletionSource != tcs) temp.Enqueue(r);
+                    }
+                    if (temp.Count > 0) _blockedStreamReaders[keys[i]] = temp;
+                    else _blockedStreamReaders.TryRemove(keys[i], out _);
+                }
+            }
+        }
     }
 
     /// <summary>
