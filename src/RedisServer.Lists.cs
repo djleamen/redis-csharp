@@ -121,35 +121,40 @@ partial class RedisServer
 
         string? popped = null;
         if (completed == elementTask && elementTask.IsCompletedSuccessfully)
+        popped = elementTask.Result;
+    else
+        CancelBlockedClient(key, tcs);
+
+    return popped != null
+        ? $"*2\r\n${key.Length}\r\n{key}\r\n${popped.Length}\r\n{popped}\r\n"
+        : "*-1\r\n";
+}
+
+/// <summary>
+/// Removes <paramref name="tcs"/> from the blocked-client queue for <paramref name="key"/>
+/// and signals it with <c>null</c> to unblock the waiting caller.
+/// </summary>
+private void CancelBlockedClient(string key, TaskCompletionSource<string?> tcs)
+{
+    lock (_blockedClientsLock)
+    {
+        if (_blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue))
         {
-            popped = elementTask.Result;
-        }
-        else
-        {
-            lock (_blockedClientsLock)
+            var temp = new Queue<BlockedClient>();
+            while (queue.Count > 0)
             {
-                if (_blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue))
-                {
-                    var temp = new Queue<BlockedClient>();
-                    while (queue.Count > 0)
-                    {
-                        var bc = queue.Dequeue();
-                        if (bc.TaskCompletionSource != tcs) temp.Enqueue(bc);
-                    }
-                    if (temp.Count > 0) _blockedClients[key] = temp;
-                    else _blockedClients.TryRemove(key, out _);
-                }
+                var bc = queue.Dequeue();
+                if (bc.TaskCompletionSource != tcs) temp.Enqueue(bc);
             }
-            tcs.TrySetResult(null);
+            if (temp.Count > 0) _blockedClients[key] = temp;
+            else _blockedClients.TryRemove(key, out _);
         }
-
-        return popped != null
-            ? $"*2\r\n${key.Length}\r\n{key}\r\n${popped.Length}\r\n{popped}\r\n"
-            : "*-1\r\n";
     }
+    tcs.TrySetResult(null);
+}
 
-    /// <summary>
-    /// Wakes up blocked BLPOP clients waiting on <paramref name="key"/>,
+/// <summary>
+/// Wakes up blocked BLPOP clients waiting on <paramref name="key"/>,
     /// delivering the first available list element to each one in order.
     /// </summary>
     private void UnblockWaitingClients(string key)
