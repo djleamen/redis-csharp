@@ -72,3 +72,12 @@ record StoredValue
     /// <summary>Creates a sorted set value with an optional expiry.</summary>
     public StoredValue(List<SortedSetEntry> sortedSet, long? expiryMs = null) { SortedSet = sortedSet; ExpiryMs = expiryMs; }
 }
+
+/// <summary>
+/// Configuration options for the append-only file persistence layer of <see cref="RedisServer"/>.
+/// </summary>
+record RedisServerOptions(
+    string Appendonly = "no",
+    string Appenddirname = "appendonlydir",
+    string Appendfilename = "appendonly.aof",
+    string Appendfsync = "everysec");

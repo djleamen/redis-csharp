@@ -136,10 +136,6 @@ partial class RedisServer
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Client handling
-    // -------------------------------------------------------------------------
-
     /// <summary>
     /// Services a single client connection from initial receive through clean-up on disconnect.
     /// Maintains per-connection state for authentication, transactions, subscriptions,
@@ -632,10 +628,6 @@ partial class RedisServer
         client.Close();
     }
 
-    // -------------------------------------------------------------------------
-    // Transaction command execution
-    // -------------------------------------------------------------------------
-
     /// <summary>
     /// Executes a single command, as invoked during EXEC for queued transaction commands.
     /// Returns the RESP-encoded response string.
@@ -678,10 +670,6 @@ partial class RedisServer
             _ => "-ERR unknown command\r\n"
         };
     }
-
-    // -------------------------------------------------------------------------
-    // Individual command implementations
-    // -------------------------------------------------------------------------
 
     /// <summary>
     /// Executes a SET command within a MULTI/EXEC transaction.
@@ -835,10 +823,6 @@ partial class RedisServer
         return "+none\r\n";
     }
 
-    // -------------------------------------------------------------------------
-    // Watch helpers
-    // -------------------------------------------------------------------------
-
     /// <summary>
     /// Marks all clients watching <paramref name="key"/> (other than <paramref name="modifier"/>)
     /// as dirty so their next EXEC will abort.
@@ -878,9 +862,6 @@ partial class RedisServer
         }
         watchedKeys.Clear();
     }
-
-    // Utility helpers
-    // -------------------------------------------------------------------------
 
     /// <summary>
     /// Parses the optional PX or EX expiry argument from a SET command and returns the

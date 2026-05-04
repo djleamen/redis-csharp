@@ -62,5 +62,5 @@ for (int i = 0; i < args.Length; i++)
 }
 
 var server = new RedisServer(port, dir, dbfilename, masterHost, masterPort,
-    appendonly, appenddirname, appendfilename, appendfsync);
+    new RedisServerOptions(appendonly, appenddirname, appendfilename, appendfsync));
 await server.RunAsync();

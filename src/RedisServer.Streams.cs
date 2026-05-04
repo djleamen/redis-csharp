@@ -346,19 +346,7 @@ partial class RedisServer
     {
         if (rawId == "*")
         {
-            millisTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            seqNum = 0;
-
-            if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.Stream?.Count > 0)
-            {
-                var last = sv.Stream[^1];
-                string[] lp = last.Id.Split('-');
-                long lm = long.Parse(lp[0]), ls = long.Parse(lp[1]);
-
-                if (millisTime == lm) seqNum = ls + 1;
-                else if (millisTime <= lm) { millisTime = lm; seqNum = ls + 1; }
-            }
-
+            ResolveAutoId(key, ref millisTime, ref seqNum);
             resolvedId = $"{millisTime}-{seqNum}";
             return null;
         }
@@ -369,21 +357,7 @@ partial class RedisServer
 
         if (idParts[1] == "*")
         {
-            seqNum = 0;
-            if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.Stream?.Count > 0)
-            {
-                var last = sv.Stream[^1];
-                string[] lp = last.Id.Split('-');
-                long lm = long.Parse(lp[0]), ls = long.Parse(lp[1]);
-
-                if (millisTime == lm) seqNum = ls + 1;
-                else if (millisTime == 0) seqNum = 1;
-            }
-            else if (millisTime == 0)
-            {
-                seqNum = 1;
-            }
-
+            ResolvePartialSeqNum(key, millisTime, ref seqNum);
             resolvedId = $"{millisTime}-{seqNum}";
             return null;
         }
@@ -392,5 +366,47 @@ partial class RedisServer
             return "-ERR Invalid stream ID specified as stream command argument\r\n";
 
         return null;
+    }
+
+    /// <summary>
+    /// Sets <paramref name="millisTime"/> to the current time and computes the next
+    /// auto-incremented sequence number for a fully-wildcarded XADD entry ID (<c>*</c>).
+    /// </summary>
+    private void ResolveAutoId(string key, ref long millisTime, ref long seqNum)
+    {
+        millisTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        seqNum = 0;
+
+        if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.Stream?.Count > 0)
+        {
+            var last = sv.Stream[^1];
+            string[] lp = last.Id.Split('-');
+            long lm = long.Parse(lp[0]), ls = long.Parse(lp[1]);
+
+            if (millisTime == lm) seqNum = ls + 1;
+            else if (millisTime <= lm) { millisTime = lm; seqNum = ls + 1; }
+        }
+    }
+
+    /// <summary>
+    /// Computes the next auto-incremented sequence number for a partially-wildcarded XADD
+    /// entry ID (<c>ms-*</c>), where the millisecond part is already fixed.
+    /// </summary>
+    private void ResolvePartialSeqNum(string key, long millisTime, ref long seqNum)
+    {
+        seqNum = 0;
+        if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.Stream?.Count > 0)
+        {
+            var last = sv.Stream[^1];
+            string[] lp = last.Id.Split('-');
+            long lm = long.Parse(lp[0]), ls = long.Parse(lp[1]);
+
+            if (millisTime == lm) seqNum = ls + 1;
+            else if (millisTime == 0) seqNum = 1;
+        }
+        else if (millisTime == 0)
+        {
+            seqNum = 1;
+        }
     }
 }
