@@ -60,7 +60,7 @@ partial class RedisServer
     {
         try
         {
-            var masterClient = new TcpClient();
+            using var masterClient = new TcpClient();
             await masterClient.ConnectAsync(host, masterPort);
             NetworkStream stream = masterClient.GetStream();
             byte[] buffer = new byte[4096];
@@ -131,7 +131,10 @@ partial class RedisServer
                 await ProcessBufferedCommandsAsync(commandBuffer, stream);
             }
         }
-        catch { }
+        catch
+        {
+            // Connection to master failed or was lost; replica will remain disconnected.
+        }
     }
 
     /// <summary>
