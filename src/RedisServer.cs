@@ -141,12 +141,7 @@ partial class RedisServer
     /// </summary>
     private async Task HandleClientAsync(Socket client)
     {
-        bool inTransaction = false;
-        var transactionQueue = new List<string[]>();
-        var watchedKeys = new HashSet<string>();
-        bool isReplicationConnection = false;
-        bool isSubscribedMode = false;
-        bool isAuthenticated = _defaultUserFlags.Contains(NoPass);
+        var session = new ClientSession(_defaultUserFlags.Contains(NoPass));
 
         while (true)
         {
@@ -154,450 +149,420 @@ partial class RedisServer
             {
                 byte[] buffer = new byte[1024];
                 int bytesRead = await client.ReceiveAsync(buffer.AsMemory(), SocketFlags.None);
-
-                if (bytesRead == 0)
-                    break;
+                if (bytesRead == 0) break;
 
                 string input = Encoding.UTF8.GetString(buffer, 0, bytesRead);
                 string[] parts = RespParser.ParseArray(input);
-                if (parts.Length == 0)
-                    continue;
+                if (parts.Length == 0) continue;
 
-                string command = parts[0].ToUpper();
-                string response = string.Empty;
-
-                if (isSubscribedMode)
-                {
-                    string[] allowedInSubMode = { "SUBSCRIBE", "UNSUBSCRIBE", "PSUBSCRIBE", "PUNSUBSCRIBE", "PING", "QUIT", "RESET" };
-                    if (!allowedInSubMode.Contains(command))
-                    {
-                        response = $"-ERR Can't execute '{command.ToLower()}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n";
-                        await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
-                        continue;
-                    }
-                }
-
-                if (!isAuthenticated && command != "AUTH" && command != "HELLO" && command != "QUIT" && command != "RESET")
-                {
-                    await client.SendAsync(Encoding.UTF8.GetBytes("-NOAUTH Authentication required.\r\n").AsMemory(), SocketFlags.None);
-                    continue;
-                }
-
-                if (command == "MULTI")
-                {
-                    inTransaction = true;
-                    transactionQueue.Clear();
-                    response = "+OK\r\n";
-                }
-                else if (command == "EXEC")
-                {
-                    if (inTransaction)
-                    {
-                        bool dirty = _watchDirty.TryGetValue(client, out var d) && d;
-                        if (dirty)
-                        {
-                            response = "*-1\r\n";
-                        }
-                        else
-                        {
-                            var responses = new List<string>();
-                            foreach (var queued in transactionQueue)
-                                responses.Add(await ExecuteCommandAsync(queued, client));
-
-                            var sb = new StringBuilder();
-                            sb.Append($"*{responses.Count}\r\n");
-                            foreach (var r in responses)
-                                sb.Append(r);
-
-                            response = sb.ToString();
-                        }
-                        inTransaction = false;
-                        transactionQueue.Clear();
-                        ClearWatchState(client, watchedKeys);
-                    }
-                    else
-                    {
-                        response = "-ERR EXEC without MULTI\r\n";
-                    }
-                }
-                else if (command == "DISCARD")
-                {
-                    if (inTransaction)
-                    {
-                        inTransaction = false;
-                        transactionQueue.Clear();
-                        ClearWatchState(client, watchedKeys);
-                        response = "+OK\r\n";
-                    }
-                    else
-                    {
-                        response = "-ERR DISCARD without MULTI\r\n";
-                    }
-                }
-                else if (command == "WATCH")
-                {
-                    if (inTransaction)
-                    {
-                        response = "-ERR WATCH inside MULTI is not allowed\r\n";
-                    }
-                    else
-                    {
-                        lock (_watchLock)
-                        {
-                            for (int i = 1; i < parts.Length; i++)
-                            {
-                                string watchKey = parts[i];
-                                watchedKeys.Add(watchKey);
-                                if (!_keyWatchers.TryGetValue(watchKey, out var watchers))
-                                {
-                                    watchers = new HashSet<Socket>();
-                                    _keyWatchers[watchKey] = watchers;
-                                }
-                                watchers.Add(client);
-                            }
-                        }
-                        response = "+OK\r\n";
-                    }
-                }
-                else if (command == "UNWATCH")
-                {
-                    ClearWatchState(client, watchedKeys);
-                    response = "+OK\r\n";
-                }
-                else if (inTransaction)
-                {
-                    transactionQueue.Add(parts);
-                    response = "+QUEUED\r\n";
-                }
-                else if (command == "PING")
-                {
-                    response = isSubscribedMode ? "*2\r\n$4\r\npong\r\n$0\r\n\r\n" : "+PONG\r\n";
-                }
-                else if (command == "ECHO" && parts.Length > 1)
-                {
-                    string message = parts[1];
-                    response = $"${message.Length}\r\n{message}\r\n";
-                }
-                else if (command == "INFO")
-                {
-                    if (parts.Length == 1 || parts[1].ToUpper() == "REPLICATION")
-                    {
-                        string role = _isReplica ? "slave" : "master";
-                        string info = _isReplica
-                            ? $"role:{role}"
-                            : $"role:{role}\r\nmaster_replid:{ReplicationId}\r\nmaster_repl_offset:{ReplicationOffset}";
-                        response = $"${info.Length}\r\n{info}\r\n";
-                    }
-                    else
-                    {
-                        response = "$0\r\n\r\n";
-                    }
-                }
-                else if (command == "CONFIG" && parts.Length >= 3 && parts[1].ToUpper() == "GET")
-                {
-                    string parameter = parts[2].ToLower();
-                    string? value = parameter switch
-                    {
-                        "dir" => _dir,
-                        "dbfilename" => _dbFilename,
-                        "appendonly" => _appendonly,
-                        "appenddirname" => _appenddirname,
-                        "appendfilename" => _appendfilename,
-                        "appendfsync" => _appendfsync,
-                        _ => null
-                    };
-
-                    response = value != null
-                        ? $"*2\r\n${parameter.Length}\r\n{parameter}\r\n${value.Length}\r\n{value}\r\n"
-                        : "*0\r\n";
-                }
-                else if (command == "KEYS" && parts.Length >= 2)
-                {
-                    string pattern = parts[1];
-                    var matchingKeys = new List<string>();
-                    long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-                    foreach (var key in _dataStore.Keys)
-                    {
-                        if (pattern != "*" && key != pattern)
-                            continue;
-                        if (_dataStore.TryGetValue(key, out StoredValue? sv) &&
-                            (!sv.ExpiryMs.HasValue || now <= sv.ExpiryMs.Value))
-                        {
-                            matchingKeys.Add(key);
-                        }
-                    }
-
-                    var sb = new StringBuilder();
-                    sb.Append($"*{matchingKeys.Count}\r\n");
-                    foreach (var key in matchingKeys)
-                        sb.Append($"${key.Length}\r\n{key}\r\n");
-
-                    response = sb.ToString();
-                }
-                else if (command == "REPLCONF")
-                {
-                    if (parts.Length >= 3 && parts[1].ToUpper() == "ACK")
-                    {
-                        if (long.TryParse(parts[2], out long ackOffset))
-                        {
-                            lock (_replicaConnectionsLock)
-                            {
-                                if (_replicaConnections.Contains(client))
-                                    _replicaAckOffsets[client] = ackOffset;
-                            }
-                        }
-                        response = string.Empty;
-                    }
-                    else
-                    {
-                        response = "+OK\r\n";
-                    }
-                }
-                else if (command == "PSYNC" && parts.Length >= 3)
-                {
-                    string fullresync = $"+FULLRESYNC {ReplicationId} {ReplicationOffset}\r\n";
-                    byte[] fullresyncBytes = Encoding.UTF8.GetBytes(fullresync);
-
-                    byte[] rdbFile = Convert.FromBase64String("UkVESVMwMDA5/2NhMOXkSGD0");
-                    byte[] rdbHeader = Encoding.UTF8.GetBytes($"${rdbFile.Length}\r\n");
-
-                    byte[] responseData = new byte[fullresyncBytes.Length + rdbHeader.Length + rdbFile.Length];
-                    Array.Copy(fullresyncBytes, 0, responseData, 0, fullresyncBytes.Length);
-                    Array.Copy(rdbHeader, 0, responseData, fullresyncBytes.Length, rdbHeader.Length);
-                    Array.Copy(rdbFile, 0, responseData, fullresyncBytes.Length + rdbHeader.Length, rdbFile.Length);
-
-                    await client.SendAsync(responseData.AsMemory(), SocketFlags.None);
-
-                    lock (_replicaConnectionsLock)
-                    {
-                        _replicaConnections.Add(client);
-                        _replicaAckOffsets[client] = 0;
-                    }
-                    isReplicationConnection = true;
-                    continue;
-                }
-                else if (command == "SET" && parts.Length >= 3)
-                {
-                    string key = parts[1];
-                    string value = parts[2];
-                    long? expiryMs = ParseSetExpiry(parts);
-
-                    _dataStore[key] = new StoredValue(value, expiryMs);
-
-                    if (_appendonly.Equals("yes", StringComparison.OrdinalIgnoreCase))
-                        AppendToAof(parts);
-
-                    response = "+OK\r\n";
-                    NotifyKeyModified(key, client);
-
-                    if (!isReplicationConnection)
-                        PropagateToReplicas(input);
-                }
-                else if (command == "GET" && parts.Length > 1)
-                {
-                    response = GetStringValue(parts[1]);
-                }
-                else if (command == "INCR" && parts.Length >= 2)
-                {
-                    response = IncrementKey(parts[1]);
-                    NotifyKeyModified(parts[1], client);
-                }
-                else if (command == "ZADD" && parts.Length >= 4)
-                {
-                    response = ZAdd(parts[1], parts[2], parts[3]);
-                    NotifyKeyModified(parts[1], client);
-                }
-                else if (command == "GEOADD" && parts.Length >= 5)
-                {
-                    response = GeoAdd(parts);
-                    NotifyKeyModified(parts[1], client);
-                }
-                else if (command == "GEOPOS" && parts.Length >= 3)
-                {
-                    response = GeoPos(parts);
-                }
-                else if (command == "GEODIST" && parts.Length >= 4)
-                {
-                    response = GeoDist(parts[1], parts[2], parts[3]);
-                }
-                else if (command == "GEOSEARCH" && parts.Length >= 8)
-                {
-                    response = GeoSearch(parts);
-                }
-                else if (command == "AUTH" && parts.Length >= 3)
-                {
-                    (isAuthenticated, response) = Authenticate(parts[1], parts[2]);
-                }
-                else if (command == "ACL" && parts.Length >= 2 && parts[1].ToUpper() == "WHOAMI")
-                {
-                    response = "$7\r\ndefault\r\n";
-                }
-                else if (command == "ACL" && parts.Length >= 3 && parts[1].ToUpper() == "SETUSER")
-                {
-                    response = AclSetUser(parts);
-                }
-                else if (command == "ACL" && parts.Length >= 3 && parts[1].ToUpper() == "GETUSER")
-                {
-                    response = AclGetUser(parts[2]);
-                }
-                else if (command == "ZRANK" && parts.Length >= 3)
-                {
-                    response = ZRank(parts[1], parts[2]);
-                }
-                else if (command == "ZRANGE" && parts.Length >= 4)
-                {
-                    response = ZRange(parts[1], parts[2], parts[3]);
-                }
-                else if (command == "ZCARD" && parts.Length >= 2)
-                {
-                    response = ZCard(parts[1]);
-                }
-                else if (command == "ZSCORE" && parts.Length >= 3)
-                {
-                    response = ZScore(parts[1], parts[2]);
-                }
-                else if (command == "ZREM" && parts.Length >= 3)
-                {
-                    response = ZRem(parts[1], parts[2]);
-                    NotifyKeyModified(parts[1], client);
-                }
-                else if (command == "WAIT" && parts.Length >= 3)
-                {
-                    response = await WaitForReplicas(parts[1], parts[2]);
-                }
-                else if (command == "RPUSH" && parts.Length >= 3)
-                {
-                    string key = parts[1];
-                    var elements = parts.Skip(2).ToArray();
-                    bool shouldUnblock = false;
-
-                    if (!_dataStore.ContainsKey(key))
-                    {
-                        _dataStore[key] = new StoredValue(new List<string>(elements));
-                        response = $":{elements.Length}\r\n";
-                        shouldUnblock = true;
-                    }
-                    else if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null)
-                    {
-                        sv.List.AddRange(elements);
-                        response = $":{sv.List.Count}\r\n";
-                        shouldUnblock = true;
-                    }
-                    else
-                    {
-                        response = WrongTypeError;
-                    }
-
-                    if (!string.IsNullOrEmpty(response))
-                    {
-                        await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
-                        response = string.Empty;
-                    }
-
-                    if (shouldUnblock)
-                    {
-                        UnblockWaitingClients(key);
-                        NotifyKeyModified(key, client);
-                    }
-                }
-                else if (command == "LPUSH" && parts.Length >= 3)
-                {
-                    string key = parts[1];
-                    var elements = parts.Skip(2).ToArray();
-                    bool shouldUnblock = false;
-
-                    if (!_dataStore.ContainsKey(key))
-                    {
-                        _dataStore[key] = new StoredValue(new List<string>(elements.Reverse()));
-                        response = $":{elements.Length}\r\n";
-                        shouldUnblock = true;
-                    }
-                    else if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null)
-                    {
-                        for (int i = 0; i < elements.Length; i++)
-                            sv.List.Insert(0, elements[i]);
-                        response = $":{sv.List.Count}\r\n";
-                        shouldUnblock = true;
-                    }
-                    else
-                    {
-                        response = WrongTypeError;
-                    }
-
-                    if (!string.IsNullOrEmpty(response))
-                    {
-                        await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
-                        response = string.Empty;
-                    }
-
-                    if (shouldUnblock)
-                    {
-                        UnblockWaitingClients(key);
-                        NotifyKeyModified(key, client);
-                    }
-                }
-                else if (command == "LRANGE" && parts.Length >= 4)
-                {
-                    response = LRange(parts[1], parts[2], parts[3]);
-                }
-                else if (command == "LLEN" && parts.Length >= 2)
-                {
-                    response = LLen(parts[1]);
-                }
-                else if (command == "LPOP" && parts.Length >= 2)
-                {
-                    response = LPop(parts) ?? string.Empty;
-                }
-                else if (command == "BLPOP" && parts.Length >= 3)
-                {
-                    response = await BLPop(parts[1], parts[2]);
-                }
-                else if (command == "TYPE" && parts.Length >= 2)
-                {
-                    response = TypeOf(parts[1]);
-                }
-                else if (command == "XADD" && parts.Length >= 4)
-                {
-                    response = XAdd(parts);
-                    NotifyKeyModified(parts[1], client);
-                }
-                else if (command == "XREAD" && parts.Length >= 4)
-                {
-                    response = await XRead(parts);
-                }
-                else if (command == "XRANGE" && parts.Length >= 4)
-                {
-                    response = XRange(parts[1], parts[2], parts[3]);
-                }
-                else if (command == "PUBLISH" && parts.Length >= 3)
-                {
-                    response = Publish(parts[1], parts[2]);
-                }
-                else if (command == "SUBSCRIBE" && parts.Length >= 2)
-                {
-                    Subscribe(client, parts.Skip(1).ToArray(), ref isSubscribedMode);
-                    response = string.Empty;
-                }
-                else if (command == "UNSUBSCRIBE" && parts.Length >= 2)
-                {
-                    Unsubscribe(client, parts.Skip(1).ToArray(), ref isSubscribedMode);
-                    response = string.Empty;
-                }
-                else
-                {
-                    response = "-ERR unknown command\r\n";
-                }
-
-                if (!string.IsNullOrEmpty(response) && !isReplicationConnection)
-                    await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
+                await ProcessCommandAsync(client, session, parts, input);
             }
-            catch
-            {
-                break;
-            }
+            catch { break; }
         }
 
+        CleanupClient(client);
+    }
+
+    // ── Per-connection mutable state ─────────────────────────────────────────
+    private sealed class ClientSession
+    {
+        public bool InTransaction { get; set; }
+        public List<string[]> TransactionQueue { get; } = new();
+        public HashSet<string> WatchedKeys { get; } = new();
+        public bool IsReplicationConnection { get; set; }
+        public bool IsSubscribedMode { get; set; }
+        public bool IsAuthenticated { get; set; }
+        public ClientSession(bool isAuthenticated) => IsAuthenticated = isAuthenticated;
+    }
+
+    private async Task ProcessCommandAsync(Socket client, ClientSession session, string[] parts, string input)
+    {
+        string command = parts[0].ToUpper();
+
+        if (session.IsSubscribedMode && !IsAllowedInSubMode(command))
+        {
+            string err = $"-ERR Can't execute '{command.ToLower()}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n";
+            await client.SendAsync(Encoding.UTF8.GetBytes(err).AsMemory(), SocketFlags.None);
+            return;
+        }
+
+        if (!session.IsAuthenticated && !IsAllowedUnauthenticated(command))
+        {
+            await client.SendAsync(Encoding.UTF8.GetBytes("-NOAUTH Authentication required.\r\n").AsMemory(), SocketFlags.None);
+            return;
+        }
+
+        string response = await HandleTransactionCommandAsync(client, session, command, parts)
+                       ?? await DispatchCommandAsync(client, session, parts, input);
+
+        if (!string.IsNullOrEmpty(response) && !session.IsReplicationConnection)
+            await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
+    }
+
+    private static bool IsAllowedInSubMode(string command) =>
+        command is "SUBSCRIBE" or "UNSUBSCRIBE" or "PSUBSCRIBE" or "PUNSUBSCRIBE" or "PING" or "QUIT" or "RESET";
+
+    private static bool IsAllowedUnauthenticated(string command) =>
+        command is "AUTH" or "HELLO" or "QUIT" or "RESET";
+
+    private async Task<string?> HandleTransactionCommandAsync(Socket client, ClientSession session, string command, string[] parts)
+    {
+        if (command == "MULTI")
+        {
+            session.InTransaction = true;
+            session.TransactionQueue.Clear();
+            return "+OK\r\n";
+        }
+        if (command == "EXEC") return await HandleExecAsync(client, session);
+        if (command == "DISCARD") return HandleDiscard(client, session);
+        if (command == "WATCH") return HandleWatch(client, session, parts);
+        if (command == "UNWATCH") { ClearWatchState(client, session.WatchedKeys); return "+OK\r\n"; }
+        if (session.InTransaction) { session.TransactionQueue.Add(parts); return "+QUEUED\r\n"; }
+        return null;
+    }
+
+    private async Task<string> HandleExecAsync(Socket client, ClientSession session)
+    {
+        if (!session.InTransaction)
+            return "-ERR EXEC without MULTI\r\n";
+
+        string result;
+        bool dirty = _watchDirty.TryGetValue(client, out var d) && d;
+        if (dirty)
+        {
+            result = "*-1\r\n";
+        }
+        else
+        {
+            var responses = new List<string>();
+            foreach (var queued in session.TransactionQueue)
+                responses.Add(await ExecuteCommandAsync(queued, client));
+
+            var sb = new StringBuilder();
+            sb.Append($"*{responses.Count}\r\n");
+            foreach (var r in responses)
+                sb.Append(r);
+            result = sb.ToString();
+        }
+
+        session.InTransaction = false;
+        session.TransactionQueue.Clear();
+        ClearWatchState(client, session.WatchedKeys);
+        return result;
+    }
+
+    private string HandleDiscard(Socket client, ClientSession session)
+    {
+        if (!session.InTransaction)
+            return "-ERR DISCARD without MULTI\r\n";
+        session.InTransaction = false;
+        session.TransactionQueue.Clear();
+        ClearWatchState(client, session.WatchedKeys);
+        return "+OK\r\n";
+    }
+
+    private string HandleWatch(Socket client, ClientSession session, string[] parts)
+    {
+        if (session.InTransaction)
+            return "-ERR WATCH inside MULTI is not allowed\r\n";
+        lock (_watchLock)
+        {
+            for (int i = 1; i < parts.Length; i++)
+            {
+                string watchKey = parts[i];
+                session.WatchedKeys.Add(watchKey);
+                if (!_keyWatchers.TryGetValue(watchKey, out var watchers))
+                {
+                    watchers = new HashSet<Socket>();
+                    _keyWatchers[watchKey] = watchers;
+                }
+                watchers.Add(client);
+            }
+        }
+        return "+OK\r\n";
+    }
+
+    private async Task<string> DispatchCommandAsync(Socket client, ClientSession session, string[] parts, string input)
+    {
+        string command = parts[0].ToUpper();
+        return command switch
+        {
+            "PING" => session.IsSubscribedMode ? "*2\r\n$4\r\npong\r\n$0\r\n\r\n" : "+PONG\r\n",
+            "ECHO" when parts.Length > 1 => $"${parts[1].Length}\r\n{parts[1]}\r\n",
+            "INFO" => HandleInfo(parts),
+            "CONFIG" when parts.Length >= 3 && parts[1].ToUpper() == "GET" => HandleConfigGet(parts[2]),
+            "KEYS" when parts.Length >= 2 => HandleKeys(parts[1]),
+            "REPLCONF" => HandleReplConf(client, parts),
+            "PSYNC" when parts.Length >= 3 => await HandlePsyncAsync(client, session),
+            "SET" when parts.Length >= 3 => HandleSet(client, session, parts, input),
+            "GET" when parts.Length > 1 => GetStringValue(parts[1]),
+            "INCR" when parts.Length >= 2 => HandleIncr(client, parts[1]),
+            "ZADD" when parts.Length >= 4 => HandleZAdd(client, parts),
+            "GEOADD" when parts.Length >= 5 => HandleGeoAdd(client, parts),
+            "GEOPOS" when parts.Length >= 3 => GeoPos(parts),
+            "GEODIST" when parts.Length >= 4 => GeoDist(parts[1], parts[2], parts[3]),
+            "GEOSEARCH" when parts.Length >= 8 => GeoSearch(parts),
+            "AUTH" when parts.Length >= 3 => HandleAuth(session, parts),
+            "ACL" => HandleAcl(parts),
+            "ZRANK" when parts.Length >= 3 => ZRank(parts[1], parts[2]),
+            "ZRANGE" when parts.Length >= 4 => ZRange(parts[1], parts[2], parts[3]),
+            "ZCARD" when parts.Length >= 2 => ZCard(parts[1]),
+            "ZSCORE" when parts.Length >= 3 => ZScore(parts[1], parts[2]),
+            "ZREM" when parts.Length >= 3 => HandleZRem(client, parts),
+            "WAIT" when parts.Length >= 3 => await WaitForReplicas(parts[1], parts[2]),
+            "RPUSH" when parts.Length >= 3 => await HandleRPushAsync(client, parts),
+            "LPUSH" when parts.Length >= 3 => await HandleLPushAsync(client, parts),
+            "LRANGE" when parts.Length >= 4 => LRange(parts[1], parts[2], parts[3]),
+            "LLEN" when parts.Length >= 2 => LLen(parts[1]),
+            "LPOP" when parts.Length >= 2 => LPop(parts) ?? string.Empty,
+            "BLPOP" when parts.Length >= 3 => await BLPop(parts[1], parts[2]),
+            "TYPE" when parts.Length >= 2 => TypeOf(parts[1]),
+            "XADD" when parts.Length >= 4 => HandleXAdd(client, parts),
+            "XREAD" when parts.Length >= 4 => await XRead(parts),
+            "XRANGE" when parts.Length >= 4 => XRange(parts[1], parts[2], parts[3]),
+            "PUBLISH" when parts.Length >= 3 => Publish(parts[1], parts[2]),
+            "SUBSCRIBE" when parts.Length >= 2 => HandleSubscribe(client, session, parts),
+            "UNSUBSCRIBE" when parts.Length >= 2 => HandleUnsubscribe(client, session, parts),
+            _ => "-ERR unknown command\r\n"
+        };
+    }
+
+    private string HandleInfo(string[] parts)
+    {
+        if (parts.Length == 1 || parts[1].ToUpper() == "REPLICATION")
+        {
+            string role = _isReplica ? "slave" : "master";
+            string info = _isReplica
+                ? $"role:{role}"
+                : $"role:{role}\r\nmaster_replid:{ReplicationId}\r\nmaster_repl_offset:{ReplicationOffset}";
+            return $"${info.Length}\r\n{info}\r\n";
+        }
+        return "$0\r\n\r\n";
+    }
+
+    private string HandleConfigGet(string paramName)
+    {
+        string parameter = paramName.ToLower();
+        string? value = parameter switch
+        {
+            "dir" => _dir,
+            "dbfilename" => _dbFilename,
+            "appendonly" => _appendonly,
+            "appenddirname" => _appenddirname,
+            "appendfilename" => _appendfilename,
+            "appendfsync" => _appendfsync,
+            _ => null
+        };
+        return value != null
+            ? $"*2\r\n${parameter.Length}\r\n{parameter}\r\n${value.Length}\r\n{value}\r\n"
+            : "*0\r\n";
+    }
+
+    private string HandleKeys(string pattern)
+    {
+        var matchingKeys = new List<string>();
+        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        foreach (var key in _dataStore.Keys)
+        {
+            if (pattern != "*" && key != pattern) continue;
+            if (_dataStore.TryGetValue(key, out StoredValue? sv) &&
+                (!sv.ExpiryMs.HasValue || now <= sv.ExpiryMs.Value))
+                matchingKeys.Add(key);
+        }
+        var sb = new StringBuilder();
+        sb.Append($"*{matchingKeys.Count}\r\n");
+        foreach (var key in matchingKeys)
+            sb.Append($"${key.Length}\r\n{key}\r\n");
+        return sb.ToString();
+    }
+
+    private string HandleReplConf(Socket client, string[] parts)
+    {
+        if (parts.Length >= 3 && parts[1].ToUpper() == "ACK")
+        {
+            if (long.TryParse(parts[2], out long ackOffset))
+            {
+                lock (_replicaConnectionsLock)
+                {
+                    if (_replicaConnections.Contains(client))
+                        _replicaAckOffsets[client] = ackOffset;
+                }
+            }
+            return string.Empty;
+        }
+        return "+OK\r\n";
+    }
+
+    private async Task<string> HandlePsyncAsync(Socket client, ClientSession session)
+    {
+        string fullresync = $"+FULLRESYNC {ReplicationId} {ReplicationOffset}\r\n";
+        byte[] fullresyncBytes = Encoding.UTF8.GetBytes(fullresync);
+        byte[] rdbFile = Convert.FromBase64String("UkVESVMwMDA5/2NhMOXkSGD0");
+        byte[] rdbHeader = Encoding.UTF8.GetBytes($"${rdbFile.Length}\r\n");
+        byte[] responseData = new byte[fullresyncBytes.Length + rdbHeader.Length + rdbFile.Length];
+        Array.Copy(fullresyncBytes, 0, responseData, 0, fullresyncBytes.Length);
+        Array.Copy(rdbHeader, 0, responseData, fullresyncBytes.Length, rdbHeader.Length);
+        Array.Copy(rdbFile, 0, responseData, fullresyncBytes.Length + rdbHeader.Length, rdbFile.Length);
+        await client.SendAsync(responseData.AsMemory(), SocketFlags.None);
+        lock (_replicaConnectionsLock)
+        {
+            _replicaConnections.Add(client);
+            _replicaAckOffsets[client] = 0;
+        }
+        session.IsReplicationConnection = true;
+        return string.Empty;
+    }
+
+    private string HandleSet(Socket client, ClientSession session, string[] parts, string input)
+    {
+        string key = parts[1];
+        long? expiryMs = ParseSetExpiry(parts);
+        _dataStore[key] = new StoredValue(parts[2], expiryMs);
+        if (_appendonly.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            AppendToAof(parts);
+        NotifyKeyModified(key, client);
+        if (!session.IsReplicationConnection)
+            PropagateToReplicas(input);
+        return "+OK\r\n";
+    }
+
+    private string HandleIncr(Socket client, string key)
+    {
+        string result = IncrementKey(key);
+        NotifyKeyModified(key, client);
+        return result;
+    }
+
+    private string HandleZAdd(Socket client, string[] parts)
+    {
+        string result = ZAdd(parts[1], parts[2], parts[3]);
+        NotifyKeyModified(parts[1], client);
+        return result;
+    }
+
+    private string HandleGeoAdd(Socket client, string[] parts)
+    {
+        string result = GeoAdd(parts);
+        NotifyKeyModified(parts[1], client);
+        return result;
+    }
+
+    private string HandleAuth(ClientSession session, string[] parts)
+    {
+        var (authenticated, resp) = Authenticate(parts[1], parts[2]);
+        session.IsAuthenticated = authenticated;
+        return resp;
+    }
+
+    private string HandleAcl(string[] parts)
+    {
+        if (parts.Length >= 2 && parts[1].ToUpper() == "WHOAMI") return "$7\r\ndefault\r\n";
+        if (parts.Length >= 3 && parts[1].ToUpper() == "SETUSER") return AclSetUser(parts);
+        if (parts.Length >= 3 && parts[1].ToUpper() == "GETUSER") return AclGetUser(parts[2]);
+        return "-ERR unknown command\r\n";
+    }
+
+    private string HandleZRem(Socket client, string[] parts)
+    {
+        string result = ZRem(parts[1], parts[2]);
+        NotifyKeyModified(parts[1], client);
+        return result;
+    }
+
+    private async Task<string> HandleRPushAsync(Socket client, string[] parts)
+    {
+        string key = parts[1];
+        var elements = parts.Skip(2).ToArray();
+        bool shouldUnblock;
+        string response;
+
+        if (!_dataStore.ContainsKey(key))
+        {
+            _dataStore[key] = new StoredValue(new List<string>(elements));
+            response = $":{elements.Length}\r\n";
+            shouldUnblock = true;
+        }
+        else if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null)
+        {
+            sv.List.AddRange(elements);
+            response = $":{sv.List.Count}\r\n";
+            shouldUnblock = true;
+        }
+        else
+        {
+            response = WrongTypeError;
+            shouldUnblock = false;
+        }
+
+        await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
+        if (shouldUnblock)
+        {
+            UnblockWaitingClients(key);
+            NotifyKeyModified(key, client);
+        }
+        return string.Empty;
+    }
+
+    private async Task<string> HandleLPushAsync(Socket client, string[] parts)
+    {
+        string key = parts[1];
+        var elements = parts.Skip(2).ToArray();
+        bool shouldUnblock;
+        string response;
+
+        if (!_dataStore.ContainsKey(key))
+        {
+            _dataStore[key] = new StoredValue(new List<string>(elements.Reverse()));
+            response = $":{elements.Length}\r\n";
+            shouldUnblock = true;
+        }
+        else if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null)
+        {
+            for (int i = 0; i < elements.Length; i++)
+                sv.List.Insert(0, elements[i]);
+            response = $":{sv.List.Count}\r\n";
+            shouldUnblock = true;
+        }
+        else
+        {
+            response = WrongTypeError;
+            shouldUnblock = false;
+        }
+
+        await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
+        if (shouldUnblock)
+        {
+            UnblockWaitingClients(key);
+            NotifyKeyModified(key, client);
+        }
+        return string.Empty;
+    }
+
+    private string HandleXAdd(Socket client, string[] parts)
+    {
+        string result = XAdd(parts);
+        NotifyKeyModified(parts[1], client);
+        return result;
+    }
+
+    private string HandleSubscribe(Socket client, ClientSession session, string[] parts)
+    {
+        bool isSubscribedMode = session.IsSubscribedMode;
+        Subscribe(client, parts.Skip(1).ToArray(), ref isSubscribedMode);
+        session.IsSubscribedMode = isSubscribedMode;
+        return string.Empty;
+    }
+
+    private string HandleUnsubscribe(Socket client, ClientSession session, string[] parts)
+    {
+        bool isSubscribedMode = session.IsSubscribedMode;
+        Unsubscribe(client, parts.Skip(1).ToArray(), ref isSubscribedMode);
+        session.IsSubscribedMode = isSubscribedMode;
+        return string.Empty;
+    }
+
+    private void CleanupClient(Socket client)
+    {
         lock (_replicaConnectionsLock)
         {
             _replicaConnections.Remove(client);
