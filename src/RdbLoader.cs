@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Text;
 
+namespace codecrafters_redis;
+
 /// <summary>
 /// Deserializes a Redis Database (RDB) snapshot file and populates the in-memory data store.
 /// </summary>

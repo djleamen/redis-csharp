@@ -8,6 +8,8 @@
  * and geo utilities in GeoUtils.cs.
  */
 
+using codecrafters_redis;
+
 int port = 6379;
 string? masterHost = null;
 int? masterPort = null;

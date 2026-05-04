@@ -4,6 +4,8 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 
+namespace codecrafters_redis;
+
 /// <summary>
 /// A Redis-compatible in-memory server implementing the RESP protocol.
 /// Supports persistence (RDB), replication, transactions (MULTI/EXEC),

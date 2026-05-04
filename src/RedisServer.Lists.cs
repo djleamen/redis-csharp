@@ -1,5 +1,7 @@
 using System.Text;
 
+namespace codecrafters_redis;
+
 partial class RedisServer
 {
     /// <summary>

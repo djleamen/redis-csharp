@@ -1,3 +1,5 @@
+namespace codecrafters_redis;
+
 /// <summary>
 /// Stateless utilities for parsing the Redis Serialization Protocol (RESP).
 /// </summary>
