@@ -17,7 +17,7 @@ partial class RedisServer
             return "*0\r\n";
 
         if (sv.List == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            return WrongTypeError;
 
         var list = sv.List;
         if (start < 0) start = Math.Max(0, list.Count + start);
@@ -44,7 +44,7 @@ partial class RedisServer
             return ":0\r\n";
 
         return sv.List == null
-            ? "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+            ? WrongTypeError
             : $":{sv.List.Count}\r\n";
     }
 
@@ -64,7 +64,7 @@ partial class RedisServer
             return "$-1\r\n";
 
         if (sv.List == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            return WrongTypeError;
 
         if (sv.List.Count == 0)
             return "$-1\r\n";

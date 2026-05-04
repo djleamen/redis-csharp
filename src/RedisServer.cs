@@ -15,6 +15,7 @@ partial class RedisServer
 {
     private const string ReplicationId = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
     private const int ReplicationOffset = 0;
+    private const string WrongTypeError = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
 
     private readonly int _port;
     private readonly string _dir;
@@ -491,7 +492,7 @@ partial class RedisServer
                     }
                     else
                     {
-                        response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                        response = WrongTypeError;
                     }
 
                     if (!string.IsNullOrEmpty(response))
@@ -709,7 +710,7 @@ partial class RedisServer
 
         return sv.Value != null
             ? $"${sv.Value.Length}\r\n{sv.Value}\r\n"
-            : "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            : WrongTypeError;
     }
 
     /// <summary>
@@ -728,7 +729,7 @@ partial class RedisServer
             }
 
             if (sv.Value == null)
-                return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                return WrongTypeError;
 
             if (!int.TryParse(sv.Value, out int current))
                 return "-ERR value is not an integer or out of range\r\n";

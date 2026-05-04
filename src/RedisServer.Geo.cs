@@ -35,7 +35,7 @@ partial class RedisServer
         }
 
         if (!_dataStore.TryGetValue(key, out StoredValue? sv) || sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            return WrongTypeError;
 
         var existing = sv.SortedSet.FirstOrDefault(e => e.Member == member);
         if (existing != null)

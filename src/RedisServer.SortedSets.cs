@@ -23,7 +23,7 @@ partial class RedisServer
         }
 
         if (!_dataStore.TryGetValue(key, out StoredValue? sv) || sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            return WrongTypeError;
 
         var existing = sv.SortedSet.FirstOrDefault(e => e.Member == member);
         if (existing != null)
@@ -49,7 +49,7 @@ partial class RedisServer
             return "$-1\r\n";
 
         if (sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            return WrongTypeError;
 
         for (int i = 0; i < sv.SortedSet.Count; i++)
             if (sv.SortedSet[i].Member == member)
@@ -71,7 +71,7 @@ partial class RedisServer
             return "*0\r\n";
 
         if (sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            return WrongTypeError;
 
         int count = sv.SortedSet.Count;
         if (start < 0) start = Math.Max(0, count + start);
@@ -99,7 +99,7 @@ partial class RedisServer
             return ":0\r\n";
 
         return sv.SortedSet == null
-            ? "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+            ? WrongTypeError
             : $":{sv.SortedSet.Count}\r\n";
     }
 
@@ -112,7 +112,7 @@ partial class RedisServer
             return "$-1\r\n";
 
         if (sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            return WrongTypeError;
 
         var entry = sv.SortedSet.FirstOrDefault(e => e.Member == member);
         if (entry == null) return "$-1\r\n";
@@ -131,7 +131,7 @@ partial class RedisServer
             return ":0\r\n";
 
         if (sv.SortedSet == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            return WrongTypeError;
 
         var entry = sv.SortedSet.FirstOrDefault(e => e.Member == member);
         if (entry == null) return ":0\r\n";

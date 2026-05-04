@@ -53,7 +53,7 @@ partial class RedisServer
         }
         else
         {
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            return WrongTypeError;
         }
 
         UnblockWaitingStreamReaders(key);
@@ -163,7 +163,7 @@ partial class RedisServer
             return "*0\r\n";
 
         if (sv.Stream == null)
-            return "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            return WrongTypeError;
 
         var (startMs, startSeq) = RespParser.ParseStreamId(startId, true);
         var (endMs, endSeq) = RespParser.ParseStreamId(endId, false);
