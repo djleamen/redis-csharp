@@ -65,34 +65,41 @@ static class RespParser
 
         for (int i = 0; i < arrayLength; i++)
         {
-            if (lineIndex >= lines.Length)
+            if (!TryParseElement(lines, ref lineIndex, ref bytesConsumed, parts))
                 return (null, 0);
-
-            string lengthLine = lines[lineIndex];
-            if (!lengthLine.StartsWith('$') || !int.TryParse(lengthLine.Substring(1), out int bulkLength))
-                return (null, 0);
-
-            bytesConsumed += lengthLine.Length + 2;
-            lineIndex++;
-
-            if (lineIndex >= lines.Length)
-                return (null, 0);
-
-            string value = lines[lineIndex];
-            if (value.Length != bulkLength)
-            {
-                bool isLastOrSecondLast = lineIndex == lines.Length - 1
-                    || (lineIndex == lines.Length - 2 && lines[lineIndex + 1] == "");
-                if (isLastOrSecondLast)
-                    return (null, 0);
-            }
-
-            parts.Add(value);
-            bytesConsumed += value.Length + 2;
-            lineIndex++;
         }
 
         return (parts.ToArray(), bytesConsumed);
+    }
+
+    private static bool TryParseElement(string[] lines, ref int lineIndex, ref int bytesConsumed, List<string> parts)
+    {
+        if (lineIndex >= lines.Length)
+            return false;
+
+        string lengthLine = lines[lineIndex];
+        if (!lengthLine.StartsWith('$') || !int.TryParse(lengthLine.Substring(1), out int bulkLength))
+            return false;
+
+        bytesConsumed += lengthLine.Length + 2;
+        lineIndex++;
+
+        if (lineIndex >= lines.Length)
+            return false;
+
+        string value = lines[lineIndex];
+        if (value.Length != bulkLength)
+        {
+            bool isLastOrSecondLast = lineIndex == lines.Length - 1
+                || (lineIndex == lines.Length - 2 && lines[lineIndex + 1] == "");
+            if (isLastOrSecondLast)
+                return false;
+        }
+
+        parts.Add(value);
+        bytesConsumed += value.Length + 2;
+        lineIndex++;
+        return true;
     }
 
     /// <summary>
