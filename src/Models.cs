@@ -1,3 +1,5 @@
+namespace codecrafters_redis;
+
 /// <summary>
 /// Represents a client blocked on a BLPOP operation, waiting for a list element.
 /// </summary>
@@ -29,6 +31,11 @@ record SortedSetEntry(string Member, double Score) : IComparable<SortedSetEntry>
         int cmp = Score.CompareTo(other.Score);
         return cmp != 0 ? cmp : string.Compare(Member, other.Member, StringComparison.Ordinal);
     }
+
+    public static bool operator <(SortedSetEntry left, SortedSetEntry right) => left.CompareTo(right) < 0;
+    public static bool operator <=(SortedSetEntry left, SortedSetEntry right) => left.CompareTo(right) <= 0;
+    public static bool operator >(SortedSetEntry left, SortedSetEntry right) => left.CompareTo(right) > 0;
+    public static bool operator >=(SortedSetEntry left, SortedSetEntry right) => left.CompareTo(right) >= 0;
 }
 
 /// <summary>

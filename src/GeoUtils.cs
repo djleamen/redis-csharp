@@ -1,3 +1,5 @@
+namespace codecrafters_redis;
+
 /// <summary>
 /// Stateless geospatial utilities implementing the same geohash encoding and
 /// distance calculations used by Redis.
