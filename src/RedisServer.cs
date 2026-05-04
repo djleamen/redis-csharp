@@ -83,35 +83,40 @@ partial class RedisServer
         RdbLoader.Load(Path.Combine(dir, dbFilename), _dataStore);
 
         if (_appendonly.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            InitialiseAof();
+    }
+
+    private void InitialiseAof()
+    {
+        string aofDir = Path.Combine(_dir, _appenddirname);
+        Directory.CreateDirectory(aofDir);
+        string manifestFile = Path.Combine(aofDir, $"{_appendfilename}.manifest");
+        string aofFileName = ResolveAofFileName(manifestFile);
+        _aofFilePath = Path.Combine(aofDir, aofFileName);
+        if (File.Exists(_aofFilePath))
+            ReplayAof(_aofFilePath);
+        else
+            File.Create(_aofFilePath).Dispose();
+    }
+
+    private string ResolveAofFileName(string manifestFile)
+    {
+        string defaultName = $"{_appendfilename}.1.incr.aof";
+        if (!File.Exists(manifestFile))
         {
-            string aofDir = Path.Combine(_dir, _appenddirname);
-            Directory.CreateDirectory(aofDir);
-            string manifestFile = Path.Combine(aofDir, $"{_appendfilename}.manifest");
-            string aofFileName;
-            if (File.Exists(manifestFile))
-            {
-                // Read manifest to find the active incremental AOF file (type i)
-                string[] lines = File.ReadAllLines(manifestFile);
-                aofFileName = $"{_appendfilename}.1.incr.aof"; // default fallback
-                string? aofManifestLine = lines.FirstOrDefault(l => l.Contains("type i"));
-                if (aofManifestLine != null)
-                {
-                    string[] tokens = aofManifestLine.Split(' ');
-                    if (tokens.Length >= 2 && tokens[0] == "file")
-                        aofFileName = tokens[1];
-                }
-            }
-            else
-            {
-                aofFileName = $"{_appendfilename}.1.incr.aof";
-                File.WriteAllText(manifestFile, $"file {aofFileName} seq 1 type i\n");
-            }
-            _aofFilePath = Path.Combine(aofDir, aofFileName);
-            if (File.Exists(_aofFilePath))
-                ReplayAof(_aofFilePath);
-            else
-                File.Create(_aofFilePath).Dispose();
+            File.WriteAllText(manifestFile, $"file {defaultName} seq 1 type i\n");
+            return defaultName;
         }
+        // Read manifest to find the active incremental AOF file (type i)
+        string[] lines = File.ReadAllLines(manifestFile);
+        string? aofManifestLine = lines.FirstOrDefault(l => l.Contains("type i"));
+        if (aofManifestLine != null)
+        {
+            string[] tokens = aofManifestLine.Split(' ');
+            if (tokens.Length >= 2 && tokens[0] == "file")
+                return tokens[1];
+        }
+        return defaultName;
     }
 
     /// <summary>
