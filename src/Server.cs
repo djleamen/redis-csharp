@@ -20,45 +20,28 @@ string appenddirname = "appendonlydir";
 string appendfilename = "appendonly.aof";
 string appendfsync = "everysec";
 
-for (int i = 0; i < args.Length; i++)
+for (int i = 0; i < args.Length - 1; i++)
 {
-    if (args[i] == "--port" && i + 1 < args.Length && int.TryParse(args[i + 1], out int p))
+    string val = args[i + 1];
+    switch (args[i])
     {
-        port = p;
+        case "--port" when int.TryParse(val, out int p): port = p; break;
+        case "--replicaof": (masterHost, masterPort) = ParseReplicaOf(val); break;
+        case "--dir": dir = val; break;
+        case "--dbfilename": dbfilename = val; break;
+        case "--appendonly": appendonly = val; break;
+        case "--appenddirname": appenddirname = val; break;
+        case "--appendfilename": appendfilename = val; break;
+        case "--appendfsync": appendfsync = val; break;
     }
-    else if (args[i] == "--replicaof" && i + 1 < args.Length)
-    {
-        string[] replicaParts = args[i + 1].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (replicaParts.Length == 2 && int.TryParse(replicaParts[1], out int mp))
-        {
-            masterHost = replicaParts[0];
-            masterPort = mp;
-        }
-    }
-    else if (args[i] == "--dir" && i + 1 < args.Length)
-    {
-        dir = args[i + 1];
-    }
-    else if (args[i] == "--dbfilename" && i + 1 < args.Length)
-    {
-        dbfilename = args[i + 1];
-    }
-    else if (args[i] == "--appendonly" && i + 1 < args.Length)
-    {
-        appendonly = args[i + 1];
-    }
-    else if (args[i] == "--appenddirname" && i + 1 < args.Length)
-    {
-        appenddirname = args[i + 1];
-    }
-    else if (args[i] == "--appendfilename" && i + 1 < args.Length)
-    {
-        appendfilename = args[i + 1];
-    }
-    else if (args[i] == "--appendfsync" && i + 1 < args.Length)
-    {
-        appendfsync = args[i + 1];
-    }
+}
+
+static (string? host, int? port) ParseReplicaOf(string value)
+{
+    string[] parts = value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length == 2 && int.TryParse(parts[1], out int mp))
+        return (parts[0], mp);
+    return (null, null);
 }
 
 var server = new RedisServer(port, dir, dbfilename, masterHost, masterPort,
