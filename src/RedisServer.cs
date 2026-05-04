@@ -16,6 +16,7 @@ partial class RedisServer
     private const string ReplicationId = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
     private const int ReplicationOffset = 0;
     private const string WrongTypeError = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+    private const string NoPass = "nopass";
 
     private readonly int _port;
     private readonly string _dir;
@@ -52,7 +53,7 @@ partial class RedisServer
     private readonly ConcurrentDictionary<Socket, bool> _watchDirty = new();
     private readonly object _watchLock = new();
 
-    private readonly HashSet<string> _defaultUserFlags = new() { "nopass" };
+    private readonly HashSet<string> _defaultUserFlags = new() { NoPass };
     private readonly List<string> _defaultUserPasswords = new();
 
     /// <summary>
@@ -65,19 +66,19 @@ partial class RedisServer
     /// <param name="masterHost">Master host for replica mode, or <c>null</c> for standalone/master mode.</param>
     /// <param name="masterPort">Master port for replica mode, or <c>null</c> for standalone/master mode.</param>
     public RedisServer(int port, string dir, string dbFilename, string? masterHost, int? masterPort,
-        string appendonly = "no", string appenddirname = "appendonlydir",
-        string appendfilename = "appendonly.aof", string appendfsync = "everysec")
+        RedisServerOptions? options = null)
     {
+        var opts = options ?? new RedisServerOptions();
         _port = port;
         _dir = dir;
         _dbFilename = dbFilename;
         _masterHost = masterHost;
         _masterPort = masterPort;
         _isReplica = masterHost != null && masterPort.HasValue;
-        _appendonly = appendonly;
-        _appenddirname = appenddirname;
-        _appendfilename = appendfilename;
-        _appendfsync = appendfsync;
+        _appendonly = opts.Appendonly;
+        _appenddirname = opts.Appenddirname;
+        _appendfilename = opts.Appendfilename;
+        _appendfsync = opts.Appendfsync;
 
         RdbLoader.Load(Path.Combine(dir, dbFilename), _dataStore);
 
@@ -92,15 +93,12 @@ partial class RedisServer
                 // Read manifest to find the active incremental AOF file (type i)
                 string[] lines = File.ReadAllLines(manifestFile);
                 aofFileName = $"{_appendfilename}.1.incr.aof"; // default fallback
-                foreach (string line in lines)
+                string? aofManifestLine = lines.FirstOrDefault(l => l.Contains("type i"));
+                if (aofManifestLine != null)
                 {
-                    if (line.Contains("type i"))
-                    {
-                        string[] tokens = line.Split(' ');
-                        if (tokens.Length >= 2 && tokens[0] == "file")
-                            aofFileName = tokens[1];
-                        break;
-                    }
+                    string[] tokens = aofManifestLine.Split(' ');
+                    if (tokens.Length >= 2 && tokens[0] == "file")
+                        aofFileName = tokens[1];
                 }
             }
             else
@@ -120,19 +118,19 @@ partial class RedisServer
     /// Starts the TCP listener, initiates replication if configured as a replica,
     /// and enters the accept loop.
     /// </summary>
-    public async Task RunAsync()
+    public async Task RunAsync(CancellationToken cancellationToken = default)
     {
         var listener = new TcpListener(IPAddress.Any, _port);
         listener.Start();
 
         if (_isReplica && _masterHost != null && _masterPort.HasValue)
-            _ = Task.Run(() => ConnectToMasterAsync(_masterHost, _masterPort.Value, _port));
+            _ = Task.Run(() => ConnectToMasterAsync(_masterHost, _masterPort.Value, _port), cancellationToken);
 
-        while (true)
+        while (!cancellationToken.IsCancellationRequested)
         {
-            Socket client = listener.AcceptSocket();
+            Socket client = await listener.AcceptSocketAsync(cancellationToken);
             client.NoDelay = true;
-            _ = Task.Run(() => HandleClientAsync(client));
+            _ = Task.Run(() => HandleClientAsync(client), cancellationToken);
         }
     }
 
@@ -148,14 +146,14 @@ partial class RedisServer
         var watchedKeys = new HashSet<string>();
         bool isReplicationConnection = false;
         bool isSubscribedMode = false;
-        bool isAuthenticated = _defaultUserFlags.Contains("nopass");
+        bool isAuthenticated = _defaultUserFlags.Contains(NoPass);
 
         while (true)
         {
             try
             {
                 byte[] buffer = new byte[1024];
-                int bytesRead = client.Receive(buffer);
+                int bytesRead = await client.ReceiveAsync(buffer.AsMemory(), SocketFlags.None);
 
                 if (bytesRead == 0)
                     break;
@@ -174,14 +172,14 @@ partial class RedisServer
                     if (!allowedInSubMode.Contains(command))
                     {
                         response = $"-ERR Can't execute '{command.ToLower()}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n";
-                        client.Send(Encoding.UTF8.GetBytes(response));
+                        await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
                         continue;
                     }
                 }
 
                 if (!isAuthenticated && command != "AUTH" && command != "HELLO" && command != "QUIT" && command != "RESET")
                 {
-                    client.Send(Encoding.UTF8.GetBytes("-NOAUTH Authentication required.\r\n"));
+                    await client.SendAsync(Encoding.UTF8.GetBytes("-NOAUTH Authentication required.\r\n").AsMemory(), SocketFlags.None);
                     continue;
                 }
 
@@ -369,7 +367,7 @@ partial class RedisServer
                     Array.Copy(rdbHeader, 0, responseData, fullresyncBytes.Length, rdbHeader.Length);
                     Array.Copy(rdbFile, 0, responseData, fullresyncBytes.Length + rdbHeader.Length, rdbFile.Length);
 
-                    client.Send(responseData);
+                    await client.SendAsync(responseData.AsMemory(), SocketFlags.None);
 
                     lock (_replicaConnectionsLock)
                     {
@@ -493,7 +491,7 @@ partial class RedisServer
 
                     if (!string.IsNullOrEmpty(response))
                     {
-                        client.Send(Encoding.UTF8.GetBytes(response));
+                        await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
                         response = string.Empty;
                     }
 
@@ -524,12 +522,12 @@ partial class RedisServer
                     }
                     else
                     {
-                        response = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+                        response = WrongTypeError;
                     }
 
                     if (!string.IsNullOrEmpty(response))
                     {
-                        client.Send(Encoding.UTF8.GetBytes(response));
+                        await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
                         response = string.Empty;
                     }
 
@@ -549,8 +547,7 @@ partial class RedisServer
                 }
                 else if (command == "LPOP" && parts.Length >= 2)
                 {
-                    response = LPop(parts);
-                    if (response == null!) goto SkipSend;
+                    response = LPop(parts) ?? string.Empty;
                 }
                 else if (command == "BLPOP" && parts.Length >= 3)
                 {
@@ -592,9 +589,8 @@ partial class RedisServer
                     response = "-ERR unknown command\r\n";
                 }
 
-                SkipSend:
                 if (!string.IsNullOrEmpty(response) && !isReplicationConnection)
-                    client.Send(Encoding.UTF8.GetBytes(response));
+                    await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
             }
             catch
             {
@@ -739,7 +735,7 @@ partial class RedisServer
         if (username != "default")
             return (false, "-WRONGPASS invalid username-password pair or user is disabled.\r\n");
 
-        if (_defaultUserFlags.Contains("nopass"))
+        if (_defaultUserFlags.Contains(NoPass))
             return (true, "+OK\r\n");
 
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(password));
@@ -763,7 +759,7 @@ partial class RedisServer
         for (int i = 3; i < parts.Length; i++)
         {
             string rule = parts[i];
-            if (!rule.StartsWith(">")) continue;
+            if (!rule.StartsWith('>')) continue;
 
             string password = rule.Substring(1);
             byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(password));
@@ -772,7 +768,7 @@ partial class RedisServer
             if (!_defaultUserPasswords.Contains(hexHash))
                 _defaultUserPasswords.Add(hexHash);
 
-            _defaultUserFlags.Remove("nopass");
+            _defaultUserFlags.Remove(NoPass);
         }
 
         return "+OK\r\n";
@@ -833,11 +829,8 @@ partial class RedisServer
         {
             if (_keyWatchers.TryGetValue(key, out var watchers))
             {
-                foreach (var watcher in watchers)
-                {
-                    if (watcher != modifier)
-                        _watchDirty[watcher] = true;
-                }
+                foreach (var watcher in watchers.Where(w => w != modifier))
+                    _watchDirty[watcher] = true;
             }
         }
     }
