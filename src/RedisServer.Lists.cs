@@ -121,11 +121,11 @@ partial class RedisServer
 
         string? popped = null;
         if (completed == elementTask && elementTask.IsCompletedSuccessfully)
-        popped = elementTask.Result;
-    else
-        CancelBlockedClient(key, tcs);
+            popped = elementTask.Result;
+        else
+            CancelBlockedClient(key, tcs);
 
-    return popped != null
+        return popped != null
         ? $"*2\r\n${key.Length}\r\n{key}\r\n${popped.Length}\r\n{popped}\r\n"
         : "*-1\r\n";
 }

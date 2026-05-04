@@ -122,18 +122,26 @@ partial class RedisServer
             if (commandBuffer.Length > 0)
                 await ProcessBufferedCommandsAsync(commandBuffer, stream);
 
-            while (true)
-            {
-                bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                if (bytesRead == 0) break;
-
-                commandBuffer.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
-                await ProcessBufferedCommandsAsync(commandBuffer, stream);
-            }
+            await ReceiveReplicatedCommandsAsync(stream, buffer, commandBuffer);
         }
         catch
         {
             // Connection to master failed or was lost; replica will remain disconnected.
+        }
+    }
+
+    /// <summary>
+    /// Continuously reads propagated commands from the master until the connection closes.
+    /// </summary>
+    private async Task ReceiveReplicatedCommandsAsync(NetworkStream stream, byte[] buffer, StringBuilder commandBuffer)
+    {
+        while (true)
+        {
+            int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+            if (bytesRead == 0) break;
+
+            commandBuffer.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
+            await ProcessBufferedCommandsAsync(commandBuffer, stream);
         }
     }
 
