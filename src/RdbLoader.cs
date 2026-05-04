@@ -78,15 +78,10 @@ static class RdbLoader
                 byte valueType = opcode;
                 var (key, kb) = ReadString(fileBytes, offset); offset += kb;
 
-                if (valueType == 0)
-                {
-                    var (value, vb) = ReadString(fileBytes, offset); offset += vb;
-                    dataStore[key] = new StoredValue(value);
-                }
-                else
-                {
-                    break;
-                }
+                if (valueType != 0) break;
+
+                var (value, vb) = ReadString(fileBytes, offset); offset += vb;
+                dataStore[key] = new StoredValue(value);
             }
         }
     }
