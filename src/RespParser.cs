@@ -47,8 +47,17 @@ static class RespParser
     /// The parsed command parts and the number of characters consumed, or
     /// <c>(null, 0)</c> when <paramref name="data"/> does not yet hold a complete command.
     /// </returns>
-    public static (string[]? parts, int bytesConsumed) TryParseCommand(string data)
+    public static (string[]? parts, int bytesConsumed) TryParseCommand(string data) =>
+        TryParseCommand(data, out _);
+
+    /// <summary>
+    /// As <see cref="TryParseCommand(string)"/>, but additionally reports whether a failed
+    /// parse is a protocol violation (<paramref name="malformed"/> is <c>true</c>) rather
+    /// than data that may still become valid once more bytes arrive.
+    /// </summary>
+    public static (string[]? parts, int bytesConsumed) TryParseCommand(string data, out bool malformed)
     {
+        malformed = false;
         if (string.IsNullOrEmpty(data) || !data.StartsWith('*'))
             return (null, 0);
 
@@ -57,7 +66,11 @@ static class RespParser
             return (null, 0);
 
         if (!int.TryParse(lines[0].Substring(1), out int arrayLength))
+        {
+            // The header line is complete (terminated by \r\n) yet its count is invalid.
+            malformed = true;
             return (null, 0);
+        }
 
         var parts = new List<string>();
         int lineIndex = 1;
@@ -65,21 +78,26 @@ static class RespParser
 
         for (int i = 0; i < arrayLength; i++)
         {
-            if (!TryParseElement(lines, ref lineIndex, ref bytesConsumed, parts))
+            if (!TryParseElement(lines, ref lineIndex, ref bytesConsumed, parts, ref malformed))
                 return (null, 0);
         }
 
         return (parts.ToArray(), bytesConsumed);
     }
 
-    private static bool TryParseElement(string[] lines, ref int lineIndex, ref int bytesConsumed, List<string> parts)
+    private static bool TryParseElement(string[] lines, ref int lineIndex, ref int bytesConsumed, List<string> parts, ref bool malformed)
     {
         if (lineIndex >= lines.Length)
             return false;
 
         string lengthLine = lines[lineIndex];
         if (!lengthLine.StartsWith('$') || !int.TryParse(lengthLine.Substring(1), out int bulkLength))
+        {
+            // A terminated line where a $<length> header belongs is a protocol violation;
+            // an unterminated trailing fragment may simply be incomplete.
+            malformed = lineIndex < lines.Length - 1;
             return false;
+        }
 
         bytesConsumed += lengthLine.Length + 2;
         lineIndex++;
@@ -87,8 +105,10 @@ static class RespParser
         if (lineIndex >= lines.Length)
             return false;
 
+        // Bulk lengths are byte counts; the buffered data is decoded text, so compare
+        // against the value's UTF-8 byte count or non-ASCII values never complete.
         string value = lines[lineIndex];
-        if (value.Length != bulkLength)
+        if (System.Text.Encoding.UTF8.GetByteCount(value) != bulkLength)
         {
             bool isLastOrSecondLast = lineIndex == lines.Length - 1
                 || (lineIndex == lines.Length - 2 && lines[lineIndex + 1] == "");

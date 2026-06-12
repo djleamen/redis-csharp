@@ -143,14 +143,18 @@ partial class RedisServer
     /// Services a single client connection from initial receive through clean-up on disconnect.
     /// Maintains per-connection state for authentication, transactions, subscriptions,
     /// and whether the connection is a replication stream.
-    /// Received bytes accumulate in a per-client buffer so commands larger than one
-    /// read and multiple pipelined commands in one segment are each parsed exactly once.
+    /// Received data accumulates in a per-client text buffer (decoded with a stateful
+    /// UTF-8 decoder so multi-byte sequences split across reads stay intact) so commands
+    /// larger than one read and multiple pipelined commands in one segment are each
+    /// parsed exactly once.
     /// </summary>
     private async Task HandleClientAsync(Socket client)
     {
         var session = new ClientSession(_defaultUserFlags.Contains(NoPass));
         var commandBuffer = new StringBuilder();
+        var decoder = Encoding.UTF8.GetDecoder();
         byte[] buffer = new byte[1024];
+        char[] charBuffer = new char[Encoding.UTF8.GetMaxCharCount(buffer.Length)];
 
         while (true)
         {
@@ -159,7 +163,8 @@ partial class RedisServer
                 int bytesRead = await client.ReceiveAsync(buffer.AsMemory(), SocketFlags.None);
                 if (bytesRead == 0) break;
 
-                commandBuffer.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
+                int charCount = decoder.GetChars(buffer, 0, bytesRead, charBuffer, 0);
+                commandBuffer.Append(charBuffer, 0, charCount);
                 await DrainClientCommandsAsync(client, session, commandBuffer);
             }
             catch { break; }
@@ -171,7 +176,8 @@ partial class RedisServer
     /// <summary>
     /// Dispatches every complete RESP command currently in <paramref name="commandBuffer"/>,
     /// leaving partial trailing data for the next read. Data that cannot begin a RESP
-    /// array is discarded, matching the previous behaviour of ignoring unparseable reads.
+    /// array, or that violates the protocol mid-command, is discarded so it cannot wedge
+    /// the buffer — matching the previous behaviour of ignoring unparseable reads.
     /// </summary>
     private async Task DrainClientCommandsAsync(Socket client, ClientSession session, StringBuilder commandBuffer)
     {
@@ -181,17 +187,19 @@ partial class RedisServer
         while (processed < data.Length)
         {
             string remaining = data.Substring(processed);
-            var (parts, consumed) = RespParser.TryParseCommand(remaining);
+            var (parts, consumed) = RespParser.TryParseCommand(remaining, out bool malformed);
             if (parts == null || consumed == 0)
             {
-                // Not a RESP array: drop the junk rather than letting it wedge the buffer.
-                if (!remaining.StartsWith('*'))
+                if (malformed || !remaining.StartsWith('*'))
                     processed = data.Length;
                 break;
             }
 
             if (parts.Length > 0)
-                await ProcessCommandAsync(client, session, parts, remaining.Substring(0, consumed));
+            {
+                string raw = consumed == remaining.Length ? remaining : remaining.Substring(0, consumed);
+                await ProcessCommandAsync(client, session, parts, raw);
+            }
             processed += consumed;
         }
 
