@@ -143,29 +143,60 @@ partial class RedisServer
     /// Services a single client connection from initial receive through clean-up on disconnect.
     /// Maintains per-connection state for authentication, transactions, subscriptions,
     /// and whether the connection is a replication stream.
+    /// Received bytes accumulate in a per-client buffer so commands larger than one
+    /// read and multiple pipelined commands in one segment are each parsed exactly once.
     /// </summary>
     private async Task HandleClientAsync(Socket client)
     {
         var session = new ClientSession(_defaultUserFlags.Contains(NoPass));
+        var commandBuffer = new StringBuilder();
+        byte[] buffer = new byte[1024];
 
         while (true)
         {
             try
             {
-                byte[] buffer = new byte[1024];
                 int bytesRead = await client.ReceiveAsync(buffer.AsMemory(), SocketFlags.None);
                 if (bytesRead == 0) break;
 
-                string input = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                string[] parts = RespParser.ParseArray(input);
-                if (parts.Length == 0) continue;
-
-                await ProcessCommandAsync(client, session, parts, input);
+                commandBuffer.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
+                await DrainClientCommandsAsync(client, session, commandBuffer);
             }
             catch { break; }
         }
 
         CleanupClient(client);
+    }
+
+    /// <summary>
+    /// Dispatches every complete RESP command currently in <paramref name="commandBuffer"/>,
+    /// leaving partial trailing data for the next read. Data that cannot begin a RESP
+    /// array is discarded, matching the previous behaviour of ignoring unparseable reads.
+    /// </summary>
+    private async Task DrainClientCommandsAsync(Socket client, ClientSession session, StringBuilder commandBuffer)
+    {
+        string data = commandBuffer.ToString();
+        int processed = 0;
+
+        while (processed < data.Length)
+        {
+            string remaining = data.Substring(processed);
+            var (parts, consumed) = RespParser.TryParseCommand(remaining);
+            if (parts == null || consumed == 0)
+            {
+                // Not a RESP array: drop the junk rather than letting it wedge the buffer.
+                if (!remaining.StartsWith('*'))
+                    processed = data.Length;
+                break;
+            }
+
+            if (parts.Length > 0)
+                await ProcessCommandAsync(client, session, parts, remaining.Substring(0, consumed));
+            processed += consumed;
+        }
+
+        if (processed > 0)
+            commandBuffer.Remove(0, processed);
     }
 
     // ── Per-connection mutable state ─────────────────────────────────────────
