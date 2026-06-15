@@ -9,13 +9,13 @@ partial class RedisServer
     /// inclusive index range.
     /// Acquires the per-key lock so that concurrent mutations cannot corrupt the read.
     /// </summary>
-    private string LRange(string key, string startStr, string stopStr)
+    private async Task<string> LRange(string key, string startStr, string stopStr)
     {
         if (!int.TryParse(startStr, out int start) || !int.TryParse(stopStr, out int stop))
             return "-ERR value is not an integer or out of range\r\n";
 
         var keyLock = GetKeyLock(key);
-        keyLock.Wait();
+        await keyLock.WaitAsync();
         try
         {
             if (!_dataStore.TryGetValue(key, out StoredValue? sv))
@@ -49,10 +49,10 @@ partial class RedisServer
     /// Returns the length of the list stored at <paramref name="key"/>.
     /// Acquires the per-key lock so that concurrent mutations cannot corrupt the read.
     /// </summary>
-    private string LLen(string key)
+    private async Task<string> LLen(string key)
     {
         var keyLock = GetKeyLock(key);
-        keyLock.Wait();
+        await keyLock.WaitAsync();
         try
         {
             if (!_dataStore.TryGetValue(key, out StoredValue? sv))
@@ -73,7 +73,7 @@ partial class RedisServer
     /// Supports the optional count argument for multi-element pops.
     /// Acquires the per-key lock to prevent races with concurrent push/pop operations.
     /// </summary>
-    private string LPop(string[] parts)
+    private async Task<string> LPop(string[] parts)
     {
         string key = parts[1];
         int count = 1;
@@ -82,7 +82,7 @@ partial class RedisServer
             return "-ERR value is not an integer or out of range\r\n";
 
         var keyLock = GetKeyLock(key);
-        keyLock.Wait();
+        await keyLock.WaitAsync();
         try
         {
             if (!_dataStore.TryGetValue(key, out StoredValue? sv))
