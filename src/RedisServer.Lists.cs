@@ -7,50 +7,71 @@ partial class RedisServer
     /// <summary>
     /// Returns the elements in the list at <paramref name="key"/> within the specified
     /// inclusive index range.
+    /// Acquires the per-key lock so that concurrent mutations cannot corrupt the read.
     /// </summary>
     private string LRange(string key, string startStr, string stopStr)
     {
         if (!int.TryParse(startStr, out int start) || !int.TryParse(stopStr, out int stop))
             return "-ERR value is not an integer or out of range\r\n";
 
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return "*0\r\n";
+        var keyLock = GetKeyLock(key);
+        keyLock.Wait();
+        try
+        {
+            if (!_dataStore.TryGetValue(key, out StoredValue? sv))
+                return "*0\r\n";
 
-        if (sv.List == null)
-            return WrongTypeError;
+            if (sv.List == null)
+                return WrongTypeError;
 
-        var list = sv.List;
-        if (start < 0) start = Math.Max(0, list.Count + start);
-        if (stop < 0) stop = Math.Max(0, list.Count + stop);
+            var list = sv.List;
+            if (start < 0) start = Math.Max(0, list.Count + start);
+            if (stop < 0) stop = Math.Max(0, list.Count + stop);
 
-        if (start >= list.Count || start > stop)
-            return "*0\r\n";
+            if (start >= list.Count || start > stop)
+                return "*0\r\n";
 
-        int actualStop = Math.Min(stop, list.Count - 1);
-        var sb = new StringBuilder();
-        sb.Append($"*{actualStop - start + 1}\r\n");
-        for (int i = start; i <= actualStop; i++)
-            sb.Append($"${list[i].Length}\r\n{list[i]}\r\n");
+            int actualStop = Math.Min(stop, list.Count - 1);
+            var sb = new StringBuilder();
+            sb.Append($"*{actualStop - start + 1}\r\n");
+            for (int i = start; i <= actualStop; i++)
+                sb.Append($"${list[i].Length}\r\n{list[i]}\r\n");
 
-        return sb.ToString();
+            return sb.ToString();
+        }
+        finally
+        {
+            keyLock.Release();
+        }
     }
 
     /// <summary>
     /// Returns the length of the list stored at <paramref name="key"/>.
+    /// Acquires the per-key lock so that concurrent mutations cannot corrupt the read.
     /// </summary>
     private string LLen(string key)
     {
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return ":0\r\n";
+        var keyLock = GetKeyLock(key);
+        keyLock.Wait();
+        try
+        {
+            if (!_dataStore.TryGetValue(key, out StoredValue? sv))
+                return ":0\r\n";
 
-        return sv.List == null
-            ? WrongTypeError
-            : $":{sv.List.Count}\r\n";
+            return sv.List == null
+                ? WrongTypeError
+                : $":{sv.List.Count}\r\n";
+        }
+        finally
+        {
+            keyLock.Release();
+        }
     }
 
     /// <summary>
     /// Removes and returns one or more elements from the head of the list.
     /// Supports the optional count argument for multi-element pops.
+    /// Acquires the per-key lock to prevent races with concurrent push/pop operations.
     /// </summary>
     private string LPop(string[] parts)
     {
@@ -60,52 +81,78 @@ partial class RedisServer
         if (parts.Length >= 3 && (!int.TryParse(parts[2], out count) || count < 1))
             return "-ERR value is not an integer or out of range\r\n";
 
-        if (!_dataStore.TryGetValue(key, out StoredValue? sv))
-            return "$-1\r\n";
-
-        if (sv.List == null)
-            return WrongTypeError;
-
-        if (sv.List.Count == 0)
-            return "$-1\r\n";
-
-        if (parts.Length >= 3)
+        var keyLock = GetKeyLock(key);
+        keyLock.Wait();
+        try
         {
-            int toRemove = Math.Min(count, sv.List.Count);
-            var removed = new List<string>();
-            for (int i = 0; i < toRemove; i++)
-            {
-                removed.Add(sv.List[0]);
-                sv.List.RemoveAt(0);
-            }
-            var sb = new StringBuilder();
-            sb.Append($"*{removed.Count}\r\n");
-            foreach (var el in removed)
-                sb.Append($"${el.Length}\r\n{el}\r\n");
-            return sb.ToString();
-        }
+            if (!_dataStore.TryGetValue(key, out StoredValue? sv))
+                return "$-1\r\n";
 
-        string element = sv.List[0];
-        sv.List.RemoveAt(0);
-        return $"${element.Length}\r\n{element}\r\n";
+            if (sv.List == null)
+                return WrongTypeError;
+
+            if (sv.List.Count == 0)
+                return "$-1\r\n";
+
+            if (parts.Length >= 3)
+            {
+                int toRemove = Math.Min(count, sv.List.Count);
+                var removed = new List<string>();
+                for (int i = 0; i < toRemove; i++)
+                {
+                    removed.Add(sv.List[0]);
+                    sv.List.RemoveAt(0);
+                }
+                var sb = new StringBuilder();
+                sb.Append($"*{removed.Count}\r\n");
+                foreach (var el in removed)
+                    sb.Append($"${el.Length}\r\n{el}\r\n");
+                return sb.ToString();
+            }
+
+            string element = sv.List[0];
+            sv.List.RemoveAt(0);
+            return $"${element.Length}\r\n{element}\r\n";
+        }
+        finally
+        {
+            keyLock.Release();
+        }
     }
 
     /// <summary>
     /// Blocking variant of LPOP. Waits up to <paramref name="timeoutStr"/> seconds for
     /// an element to appear at the head of the list at <paramref name="key"/>.
+    /// <para>
+    /// The per-key lock guards the fast-path pop. For the slow (blocking) path,
+    /// <see cref="TaskCompletionSource{T}.TrySetResult"/> is used as an atomic arbiter:
+    /// the first of (timeout, delivery) to call TrySetResult wins, so an element can
+    /// never be removed from the list and then silently dropped.
+    /// </para>
     /// </summary>
     private async Task<string> BLPop(string key, string timeoutStr)
     {
         if (!double.TryParse(timeoutStr, out double timeout))
             return "-ERR timeout is not a float or out of range\r\n";
 
-        if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null && sv.List.Count > 0)
+        // Fast path: element already available — take it under the per-key lock.
+        var keyLock = GetKeyLock(key);
+        await keyLock.WaitAsync();
+        try
         {
-            string element = sv.List[0];
-            sv.List.RemoveAt(0);
-            return $"*2\r\n${key.Length}\r\n{key}\r\n${element.Length}\r\n{element}\r\n";
+            if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null && sv.List.Count > 0)
+            {
+                string element = sv.List[0];
+                sv.List.RemoveAt(0);
+                return $"*2\r\n${key.Length}\r\n{key}\r\n${element.Length}\r\n{element}\r\n";
+            }
+        }
+        finally
+        {
+            keyLock.Release();
         }
 
+        // Slow path: register as a blocked waiter and wait.
         var tcs = new TaskCompletionSource<string?>();
         lock (_blockedClientsLock)
         {
@@ -115,64 +162,89 @@ partial class RedisServer
         }
 
         Task<string?> elementTask = tcs.Task;
-        Task completed = timeout > 0
-            ? await Task.WhenAny(elementTask, Task.Delay((int)(timeout * 1000)))
-            : (await Task.WhenAny(elementTask), elementTask).Item1;
-
-        string? popped = null;
-        if (completed == elementTask && elementTask.IsCompletedSuccessfully)
-            popped = elementTask.Result;
+        if (timeout > 0)
+            await Task.WhenAny(elementTask, Task.Delay((int)(timeout * 1000)));
         else
-            CancelBlockedClient(key, tcs);
+            await elementTask;
+
+        // Use TrySetResult(null) as the atomic claim for the timeout path.
+        // • If it returns true  → we won the race; no element was (or will be) delivered.
+        // • If it returns false → UnblockWaitingClients already delivered an element.
+        bool cancelWon = tcs.TrySetResult(null);
+        string? popped = cancelWon ? null : elementTask.Result;
+
+        if (cancelWon)
+            RemoveFromBlockedQueue(key, tcs);
 
         return popped != null
-        ? $"*2\r\n${key.Length}\r\n{key}\r\n${popped.Length}\r\n{popped}\r\n"
-        : "*-1\r\n";
-}
+            ? $"*2\r\n${key.Length}\r\n{key}\r\n${popped.Length}\r\n{popped}\r\n"
+            : "*-1\r\n";
+    }
 
-/// <summary>
-/// Removes <paramref name="tcs"/> from the blocked-client queue for <paramref name="key"/>
-/// and signals it with <c>null</c> to unblock the waiting caller.
-/// </summary>
-private void CancelBlockedClient(string key, TaskCompletionSource<string?> tcs)
-{
-    lock (_blockedClientsLock)
+    /// <summary>
+    /// Removes <paramref name="tcs"/> from the blocked-client queue for <paramref name="key"/>
+    /// without signalling it (the caller is responsible for setting the result first).
+    /// </summary>
+    private void RemoveFromBlockedQueue(string key, TaskCompletionSource<string?> tcs)
     {
-        if (_blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue))
+        lock (_blockedClientsLock)
         {
-            var temp = new Queue<BlockedClient>();
-            while (queue.Count > 0)
+            if (_blockedClients.TryGetValue(key, out Queue<BlockedClient>? queue))
             {
-                var bc = queue.Dequeue();
-                if (bc.TaskCompletionSource != tcs) temp.Enqueue(bc);
+                var temp = new Queue<BlockedClient>();
+                while (queue.Count > 0)
+                {
+                    var bc = queue.Dequeue();
+                    if (bc.TaskCompletionSource != tcs) temp.Enqueue(bc);
+                }
+                if (temp.Count > 0) _blockedClients[key] = temp;
+                else _blockedClients.TryRemove(key, out _);
             }
-            if (temp.Count > 0) _blockedClients[key] = temp;
-            else _blockedClients.TryRemove(key, out _);
         }
     }
-    tcs.TrySetResult(null);
-}
 
-/// <summary>
-/// Wakes up blocked BLPOP clients waiting on <paramref name="key"/>,
-    /// delivering the first available list element to each one in order.
+    /// <summary>
+    /// Wakes up blocked BLPOP clients waiting on <paramref name="key"/>,
+    /// delivering the first available list element to each waiter in order.
+    /// <para>
+    /// Runs under both <see cref="_blockedClientsLock"/> and the per-key lock so that
+    /// list mutations and waiter dequeuing are fully serialised. Uses
+    /// <see cref="TaskCompletionSource{T}.TrySetResult"/> so that if a waiter's timeout
+    /// already won the race, the element is placed back and the next waiter is tried
+    /// rather than silently dropping the element.
+    /// </para>
     /// </summary>
     private void UnblockWaitingClients(string key)
     {
         lock (_blockedClientsLock)
         {
-            while (_blockedClients.TryGetValue(key, out var queue) && queue.Count > 0)
+            var keyLock = GetKeyLock(key);
+            keyLock.Wait();
+            try
             {
-                if (!_dataStore.TryGetValue(key, out StoredValue? sv) || sv.List == null || sv.List.Count == 0)
-                    break;
+                while (_blockedClients.TryGetValue(key, out var queue) && queue.Count > 0)
+                {
+                    if (!_dataStore.TryGetValue(key, out StoredValue? sv) || sv.List == null || sv.List.Count == 0)
+                        break;
 
-                var blocked = queue.Dequeue();
-                string element = sv.List[0];
-                sv.List.RemoveAt(0);
-                blocked.TaskCompletionSource.SetResult(element);
+                    var blocked = queue.Dequeue();
+                    string element = sv.List[0];
+                    sv.List.RemoveAt(0);
 
-                if (queue.Count == 0)
+                    if (!blocked.TaskCompletionSource.TrySetResult(element))
+                    {
+                        // The waiter's timeout already claimed the TCS; put the element
+                        // back at the head of the list and try the next blocked client.
+                        sv.List.Insert(0, element);
+                    }
+                }
+
+                if (_blockedClients.TryGetValue(key, out var q) && q.Count == 0)
                     _blockedClients.TryRemove(key, out _);
+            }
+            finally
+            {
+                keyLock.Release();
             }
         }
     }
