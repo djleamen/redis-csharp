@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace codecrafters_redis;
@@ -35,7 +36,7 @@ partial class RedisServer
             var sb = new StringBuilder();
             sb.Append($"*{actualStop - start + 1}\r\n");
             for (int i = start; i <= actualStop; i++)
-                sb.Append($"${list[i].Length}\r\n{list[i]}\r\n");
+                sb.Append($"${Encoding.UTF8.GetByteCount(list[i])}\r\n{list[i]}\r\n");
 
             return sb.ToString();
         }
@@ -106,13 +107,13 @@ partial class RedisServer
                 var sb = new StringBuilder();
                 sb.Append($"*{removed.Count}\r\n");
                 foreach (var el in removed)
-                    sb.Append($"${el.Length}\r\n{el}\r\n");
+                    sb.Append($"${Encoding.UTF8.GetByteCount(el)}\r\n{el}\r\n");
                 return sb.ToString();
             }
 
             string element = sv.List[0];
             sv.List.RemoveAt(0);
-            return $"${element.Length}\r\n{element}\r\n";
+            return $"${Encoding.UTF8.GetByteCount(element)}\r\n{element}\r\n";
         }
         finally
         {
@@ -132,7 +133,8 @@ partial class RedisServer
     /// </summary>
     private async Task<string> BLPop(string key, string timeoutStr)
     {
-        if (!double.TryParse(timeoutStr, out double timeout))
+        if (!double.TryParse(timeoutStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double timeout)
+            || timeout < 0)
             return "-ERR timeout is not a float or out of range\r\n";
 
         // Fast path: element already available — take it under the per-key lock.
@@ -144,7 +146,7 @@ partial class RedisServer
             {
                 string element = sv.List[0];
                 sv.List.RemoveAt(0);
-                return $"*2\r\n${key.Length}\r\n{key}\r\n${element.Length}\r\n{element}\r\n";
+                return $"*2\r\n${Encoding.UTF8.GetByteCount(key)}\r\n{key}\r\n${Encoding.UTF8.GetByteCount(element)}\r\n{element}\r\n";
             }
         }
         finally
@@ -152,8 +154,11 @@ partial class RedisServer
             keyLock.Release();
         }
 
-        // Slow path: register as a blocked waiter and wait.
-        var tcs = new TaskCompletionSource<string?>();
+        // Slow path: register as a blocked waiter and wait. RunContinuationsAsynchronously
+        // ensures the continuation does not run inline on the delivering thread (which
+        // holds the per-key lock inside UnblockWaitingClientsAsync), keeping lock hold
+        // times short and avoiding re-entrancy.
+        var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_blockedClientsLock)
         {
             if (!_blockedClients.ContainsKey(key))
@@ -185,7 +190,7 @@ partial class RedisServer
             RemoveFromBlockedQueue(key, tcs);
 
         return popped != null
-            ? $"*2\r\n${key.Length}\r\n{key}\r\n${popped.Length}\r\n{popped}\r\n"
+            ? $"*2\r\n${Encoding.UTF8.GetByteCount(key)}\r\n{key}\r\n${Encoding.UTF8.GetByteCount(popped)}\r\n{popped}\r\n"
             : "*-1\r\n";
     }
 

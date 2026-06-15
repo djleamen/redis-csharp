@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -936,7 +937,7 @@ partial class RedisServer
         var sb = new StringBuilder();
         sb.Append($"*{aofParts.Length}\r\n");
         foreach (string part in aofParts)
-            sb.Append($"${part.Length}\r\n{part}\r\n");
+            sb.Append($"${Encoding.UTF8.GetByteCount(part)}\r\n{part}\r\n");
 
         using var fs = new FileStream(_aofFilePath, FileMode.Append, FileAccess.Write, FileShare.Read);
         byte[] data = Encoding.UTF8.GetBytes(sb.ToString());
@@ -960,7 +961,7 @@ partial class RedisServer
                 long absMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + px;
                 var result = (string[])parts.Clone();
                 result[i] = "PXAT";
-                result[i + 1] = absMs.ToString();
+                result[i + 1] = absMs.ToString(CultureInfo.InvariantCulture);
                 return result;
             }
             if (opt == "EX" && long.TryParse(parts[i + 1], out long ex))
@@ -968,7 +969,7 @@ partial class RedisServer
                 long absMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (ex * 1000);
                 var result = (string[])parts.Clone();
                 result[i] = "PXAT";
-                result[i + 1] = absMs.ToString();
+                result[i + 1] = absMs.ToString(CultureInfo.InvariantCulture);
                 return result;
             }
         }
@@ -985,7 +986,6 @@ partial class RedisServer
     {
         string data = File.ReadAllText(path);
         int offset = 0;
-        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         while (offset < data.Length)
         {
             var (parts, consumed) = RespParser.TryParseCommand(data.Substring(offset));
@@ -996,6 +996,9 @@ partial class RedisServer
             if (command == "SET" && parts.Length >= 3)
             {
                 long? expiryMs = ParseSetExpiry(parts);
+                // Recompute "now" per entry: a large AOF can take non-trivial time to
+                // replay, and a key may cross its expiry deadline mid-replay.
+                long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 if (!expiryMs.HasValue || nowMs < expiryMs.Value)
                     _dataStore[parts[1]] = new StoredValue(parts[2], expiryMs);
             }

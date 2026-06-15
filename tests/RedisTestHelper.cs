@@ -119,11 +119,17 @@ sealed class RedisServerFixture : IAsyncDisposable
                 UseShellExecute = false,
                 WorkingDirectory = repoRoot
             })!;
+
+            // Drain both pipes concurrently *before* waiting for exit: a build that
+            // produces enough output to fill a redirected pipe buffer would otherwise
+            // deadlock against WaitForExit.
+            Task<string> stdoutTask = build.StandardOutput.ReadToEndAsync();
+            Task<string> stderrTask = build.StandardError.ReadToEndAsync();
             build.WaitForExit();
             if (build.ExitCode != 0)
                 throw new InvalidOperationException(
                     "Failed to build the redis server for tests:\n" +
-                    build.StandardOutput.ReadToEnd() + build.StandardError.ReadToEnd());
+                    stdoutTask.GetAwaiter().GetResult() + stderrTask.GetAwaiter().GetResult());
 
             _serverBuilt = true;
         }
@@ -195,12 +201,14 @@ sealed class RedisClient : IAsyncDisposable
 
     public async Task<string> ReadResponseAsync()
     {
-        // Read until we have at least one complete RESP response.
+        // Read until we have at least one complete RESP response. NetworkStream.ReadTimeout
+        // does not apply to ReadAsync, so guard each read with a CancellationToken timeout
+        // to avoid hanging indefinitely on a stalled server.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6));
         int total = 0;
-        _stream.ReadTimeout = 6000;
         do
         {
-            int n = await _stream.ReadAsync(_readBuf.AsMemory(total));
+            int n = await _stream.ReadAsync(_readBuf.AsMemory(total), cts.Token);
             if (n == 0) break;
             total += n;
         }

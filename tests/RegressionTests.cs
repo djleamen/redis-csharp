@@ -65,7 +65,29 @@ public class RegressionTests
         // Total length must be producers * itemsEach.
         await using var verifier = await RedisClient.ConnectAsync(server.Port);
         string llenResp = await verifier.SendCommandAsync("LLEN", key);
-        Assert.Equal(producers * itemsEach, ParseInteger(llenResp));
+        int total = producers * itemsEach;
+        Assert.Equal(total, ParseInteger(llenResp));
+
+        // Now drain the whole list with LPOP and assert every pushed element comes back
+        // exactly once — nothing lost, nothing duplicated.
+        var popped = new List<string>();
+        for (int i = 0; i < total; i++)
+        {
+            string resp = await verifier.SendCommandAsync("LPOP", key);
+            popped.Add(ParseBulkString(resp));
+        }
+
+        var expected = new HashSet<string>();
+        for (int p = 0; p < producers; p++)
+            for (int i = 0; i < itemsEach; i++)
+                expected.Add($"p{p}-{i}");
+
+        Assert.Equal(total, popped.Count);
+        Assert.Equal(expected.Count, popped.Distinct().Count());
+        Assert.True(expected.SetEquals(popped), "Popped elements did not match the pushed set exactly.");
+
+        // List is now empty.
+        Assert.Equal(0, ParseInteger(await verifier.SendCommandAsync("LLEN", key)));
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -262,5 +284,18 @@ public class RegressionTests
         if (resp.StartsWith(':'))
             return int.Parse(resp[1..]);
         throw new InvalidDataException($"Expected RESP integer, got: {resp}");
+    }
+
+    private static string ParseBulkString(string resp)
+    {
+        // RESP bulk string reply: "$<len>\r\n<data>\r\n" (or "$-1\r\n" for nil).
+        if (!resp.StartsWith('$'))
+            throw new InvalidDataException($"Expected RESP bulk string, got: {resp}");
+        int headerEnd = resp.IndexOf("\r\n", StringComparison.Ordinal);
+        if (headerEnd < 0)
+            throw new InvalidDataException($"Malformed RESP bulk string: {resp}");
+        if (resp[1..headerEnd] == "-1")
+            throw new InvalidDataException("Unexpected nil bulk string while draining list.");
+        return resp[(headerEnd + 2)..].TrimEnd('\r', '\n');
     }
 }
