@@ -242,8 +242,10 @@ partial class RedisServer
 
                 if (!blocked.TaskCompletionSource.TrySetResult(element))
                 {
-                    // The waiter's timeout already claimed the TCS; put the element
-                    // back at the head of the list and try the next blocked client.
+                    // The waiter's timeout already claimed the TCS.  The waiter was
+                    // permanently dequeued above, so the blocked-clients queue shrinks
+                    // by one each iteration regardless; the loop will always terminate.
+                    // Put the element back and try the next waiter.
                     sv.List.Insert(0, element);
                 }
             }

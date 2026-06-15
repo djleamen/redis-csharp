@@ -996,7 +996,7 @@ partial class RedisServer
             if (command == "SET" && parts.Length >= 3)
             {
                 long? expiryMs = ParseSetExpiry(parts);
-                if (!expiryMs.HasValue || nowMs <= expiryMs.Value)
+                if (!expiryMs.HasValue || nowMs < expiryMs.Value)
                     _dataStore[parts[1]] = new StoredValue(parts[2], expiryMs);
             }
 
