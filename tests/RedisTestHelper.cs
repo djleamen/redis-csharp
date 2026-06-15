@@ -44,14 +44,14 @@ sealed class RedisServerFixture : IAsyncDisposable
 
         int port = GetFreePort();
         bool ownsDir = dataDir == null;
-        string ownedDir = dataDir ?? Path.Combine(Path.GetTempPath(), $"redis-test-{Guid.NewGuid()}");
-        Directory.CreateDirectory(ownedDir);
+        string effectiveDataDir = dataDir ?? Path.Combine(Path.GetTempPath(), $"redis-test-{Guid.NewGuid()}");
+        Directory.CreateDirectory(effectiveDataDir);
 
         var argParts = new List<string>
         {
             "run", "--project", $"\"{serverProject}\"", "--no-build", "--",
             "--port", port.ToString(),
-            "--dir", $"\"{ownedDir}\""
+            "--dir", $"\"{effectiveDataDir}\""
         };
         if (appendonly)
             argParts.AddRange(new[] { "--appendonly", "yes", "--appendfsync", "always" });
@@ -89,7 +89,7 @@ sealed class RedisServerFixture : IAsyncDisposable
                 $"Server did not start within 8 seconds on port {port}.\n" +
                 $"Stderr: {proc.StandardError.ReadToEnd()}");
 
-        return new RedisServerFixture(proc, port, ownedDir, ownsDir);
+        return new RedisServerFixture(proc, port, effectiveDataDir, ownsDir);
     }
 
     private static int GetFreePort()

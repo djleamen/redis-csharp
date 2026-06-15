@@ -207,45 +207,56 @@ partial class RedisServer
     /// Wakes up blocked BLPOP clients waiting on <paramref name="key"/>,
     /// delivering the first available list element to each waiter in order.
     /// <para>
-    /// Runs under both <see cref="_blockedClientsLock"/> and the per-key lock so that
-    /// list mutations and waiter dequeuing are fully serialised. Uses
-    /// <see cref="TaskCompletionSource{T}.TrySetResult"/> so that if a waiter's timeout
-    /// already won the race, the element is placed back and the next waiter is tried
-    /// rather than silently dropping the element.
+    /// Acquires the per-key lock asynchronously first (no thread blocking), then
+    /// takes <see cref="_blockedClientsLock"/> only briefly to dequeue one waiter at
+    /// a time. Uses <see cref="TaskCompletionSource{T}.TrySetResult"/> so that if a
+    /// waiter's timeout already won the race, the element is placed back and the next
+    /// waiter is tried rather than silently dropping the element.
     /// </para>
     /// </summary>
-    private void UnblockWaitingClients(string key)
+    private async Task UnblockWaitingClientsAsync(string key)
     {
-        lock (_blockedClientsLock)
+        var keyLock = GetKeyLock(key);
+        await keyLock.WaitAsync();
+        try
         {
-            var keyLock = GetKeyLock(key);
-            keyLock.Wait();
-            try
+            while (true)
             {
-                while (_blockedClients.TryGetValue(key, out var queue) && queue.Count > 0)
+                // Check list availability while holding the key lock.
+                if (!_dataStore.TryGetValue(key, out StoredValue? sv) || sv.List == null || sv.List.Count == 0)
+                    break;
+
+                // Dequeue the next waiter under the blocked-clients lock (brief, sync).
+                BlockedClient? blocked;
+                lock (_blockedClientsLock)
                 {
-                    if (!_dataStore.TryGetValue(key, out StoredValue? sv) || sv.List == null || sv.List.Count == 0)
+                    if (!_blockedClients.TryGetValue(key, out var queue) || queue.Count == 0)
                         break;
-
-                    var blocked = queue.Dequeue();
-                    string element = sv.List[0];
-                    sv.List.RemoveAt(0);
-
-                    if (!blocked.TaskCompletionSource.TrySetResult(element))
-                    {
-                        // The waiter's timeout already claimed the TCS; put the element
-                        // back at the head of the list and try the next blocked client.
-                        sv.List.Insert(0, element);
-                    }
+                    blocked = queue.Dequeue();
                 }
 
+                // Pop the element and try to deliver it.  keyLock ensures the list
+                // cannot be mutated concurrently, so sv.List is still non-empty here.
+                string element = sv.List[0];
+                sv.List.RemoveAt(0);
+
+                if (!blocked.TaskCompletionSource.TrySetResult(element))
+                {
+                    // The waiter's timeout already claimed the TCS; put the element
+                    // back at the head of the list and try the next blocked client.
+                    sv.List.Insert(0, element);
+                }
+            }
+
+            lock (_blockedClientsLock)
+            {
                 if (_blockedClients.TryGetValue(key, out var q) && q.Count == 0)
                     _blockedClients.TryRemove(key, out _);
             }
-            finally
-            {
-                keyLock.Release();
-            }
+        }
+        finally
+        {
+            keyLock.Release();
         }
     }
 }

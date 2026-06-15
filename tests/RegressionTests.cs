@@ -260,7 +260,7 @@ public class RegressionTests
         // RESP integer reply: ":N\r\n"
         resp = resp.Trim();
         if (resp.StartsWith(':'))
-            return int.Parse(resp.Substring(1));
+            return int.Parse(resp[1..]);
         throw new InvalidDataException($"Expected RESP integer, got: {resp}");
     }
 }

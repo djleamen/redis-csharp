@@ -558,7 +558,7 @@ partial class RedisServer
         await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
         if (shouldUnblock)
         {
-            UnblockWaitingClients(key);
+            await UnblockWaitingClientsAsync(key);
             NotifyKeyModified(key, client);
         }
         return string.Empty;
@@ -602,7 +602,7 @@ partial class RedisServer
         await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
         if (shouldUnblock)
         {
-            UnblockWaitingClients(key);
+            await UnblockWaitingClientsAsync(key);
             NotifyKeyModified(key, client);
         }
         return string.Empty;
