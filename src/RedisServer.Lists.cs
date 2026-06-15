@@ -161,6 +161,14 @@ partial class RedisServer
             _blockedClients[key].Enqueue(new BlockedClient(key, tcs));
         }
 
+        // Close the lost-wakeup window: between releasing the key lock on the fast
+        // path above and enqueuing this waiter, a concurrent push could have added an
+        // element and found the waiter queue empty, leaving the element sitting in the
+        // list. Now that this waiter is registered, drain any such element so a BLPOP
+        // with data already available is served immediately instead of blocking until
+        // timeout. This is a no-op when no element is waiting.
+        await UnblockWaitingClientsAsync(key);
+
         Task<string?> elementTask = tcs.Task;
         if (timeout > 0)
             await Task.WhenAny(elementTask, Task.Delay((int)(timeout * 1000)));

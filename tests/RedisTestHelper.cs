@@ -42,6 +42,12 @@ sealed class RedisServerFixture : IAsyncDisposable
         string repoRoot = Path.GetFullPath(Path.Combine(testBin, "..", "..", "..", ".."));
         string serverProject = Path.Combine(repoRoot, "codecrafters-redis.csproj");
 
+        // Build the server once per test run so the suite works under a plain
+        // `dotnet test` invocation. The test project deliberately has no
+        // ProjectReference to the server (it is launched as a subprocess), so nothing
+        // else builds it; per-test starts below then use --no-build for fast startup.
+        EnsureServerBuilt(repoRoot, serverProject);
+
         int port = GetFreePort();
         bool ownsDir = dataDir == null;
         string effectiveDataDir = dataDir ?? Path.Combine(Path.GetTempPath(), $"redis-test-{Guid.NewGuid()}");
@@ -90,6 +96,37 @@ sealed class RedisServerFixture : IAsyncDisposable
                 $"Stderr: {proc.StandardError.ReadToEnd()}");
 
         return new RedisServerFixture(proc, port, effectiveDataDir, ownsDir);
+    }
+
+    private static readonly object _buildLock = new();
+    private static bool _serverBuilt;
+
+    /// <summary>
+    /// Builds the server project a single time across the whole test run. Guarded by a
+    /// lock so concurrent fixtures cannot trigger overlapping builds.
+    /// </summary>
+    private static void EnsureServerBuilt(string repoRoot, string serverProject)
+    {
+        lock (_buildLock)
+        {
+            if (_serverBuilt) return;
+
+            using var build = Process.Start(new ProcessStartInfo(
+                "dotnet", $"build \"{serverProject}\" -c Debug --nologo")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                WorkingDirectory = repoRoot
+            })!;
+            build.WaitForExit();
+            if (build.ExitCode != 0)
+                throw new InvalidOperationException(
+                    "Failed to build the redis server for tests:\n" +
+                    build.StandardOutput.ReadToEnd() + build.StandardError.ReadToEnd());
+
+            _serverBuilt = true;
+        }
     }
 
     private static int GetFreePort()
