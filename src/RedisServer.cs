@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -32,6 +33,14 @@ partial class RedisServer
     private string? _aofFilePath;
 
     private readonly ConcurrentDictionary<string, StoredValue> _dataStore = new();
+
+    /// <summary>
+    /// Per-key <see cref="SemaphoreSlim"/> (capacity 1) locks that serialise all
+    /// read-modify-write sequences on a single list key across concurrent client tasks.
+    /// Lock ordering rule: always acquire a key lock <em>before</em>
+    /// <see cref="_blockedClientsLock"/> (never the other way around) to prevent deadlocks.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _keyLocks = new();
 
     private readonly ConcurrentDictionary<string, Queue<BlockedClient>> _blockedClients = new();
     private readonly object _blockedClientsLock = new();
@@ -356,9 +365,9 @@ partial class RedisServer
             "WAIT" when parts.Length >= 3 => await WaitForReplicas(parts[1], parts[2]),
             "RPUSH" when parts.Length >= 3 => await HandleRPushAsync(client, parts),
             "LPUSH" when parts.Length >= 3 => await HandleLPushAsync(client, parts),
-            "LRANGE" when parts.Length >= 4 => LRange(parts[1], parts[2], parts[3]),
-            "LLEN" when parts.Length >= 2 => LLen(parts[1]),
-            "LPOP" when parts.Length >= 2 => LPop(parts) ?? string.Empty,
+            "LRANGE" when parts.Length >= 4 => await LRange(parts[1], parts[2], parts[3]),
+            "LLEN" when parts.Length >= 2 => await LLen(parts[1]),
+            "LPOP" when parts.Length >= 2 => await LPop(parts) ?? string.Empty,
             "BLPOP" when parts.Length >= 3 => await BLPop(parts[1], parts[2]),
             "TYPE" when parts.Length >= 2 => TypeOf(parts[1]),
             "XADD" when parts.Length >= 4 => HandleXAdd(client, parts),
@@ -520,28 +529,37 @@ partial class RedisServer
         bool shouldUnblock;
         string response;
 
-        if (!_dataStore.ContainsKey(key))
+        var keyLock = GetKeyLock(key);
+        await keyLock.WaitAsync();
+        try
         {
-            _dataStore[key] = new StoredValue(new List<string>(elements));
-            response = $":{elements.Length}\r\n";
-            shouldUnblock = true;
+            if (!_dataStore.ContainsKey(key))
+            {
+                _dataStore[key] = new StoredValue(new List<string>(elements));
+                response = $":{elements.Length}\r\n";
+                shouldUnblock = true;
+            }
+            else if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null)
+            {
+                sv.List.AddRange(elements);
+                response = $":{sv.List.Count}\r\n";
+                shouldUnblock = true;
+            }
+            else
+            {
+                response = WrongTypeError;
+                shouldUnblock = false;
+            }
         }
-        else if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null)
+        finally
         {
-            sv.List.AddRange(elements);
-            response = $":{sv.List.Count}\r\n";
-            shouldUnblock = true;
-        }
-        else
-        {
-            response = WrongTypeError;
-            shouldUnblock = false;
+            keyLock.Release();
         }
 
         await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
         if (shouldUnblock)
         {
-            UnblockWaitingClients(key);
+            await UnblockWaitingClientsAsync(key);
             NotifyKeyModified(key, client);
         }
         return string.Empty;
@@ -554,29 +572,38 @@ partial class RedisServer
         bool shouldUnblock;
         string response;
 
-        if (!_dataStore.ContainsKey(key))
+        var keyLock = GetKeyLock(key);
+        await keyLock.WaitAsync();
+        try
         {
-            _dataStore[key] = new StoredValue(new List<string>(elements.Reverse()));
-            response = $":{elements.Length}\r\n";
-            shouldUnblock = true;
+            if (!_dataStore.ContainsKey(key))
+            {
+                _dataStore[key] = new StoredValue(new List<string>(elements.Reverse()));
+                response = $":{elements.Length}\r\n";
+                shouldUnblock = true;
+            }
+            else if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null)
+            {
+                for (int i = 0; i < elements.Length; i++)
+                    sv.List.Insert(0, elements[i]);
+                response = $":{sv.List.Count}\r\n";
+                shouldUnblock = true;
+            }
+            else
+            {
+                response = WrongTypeError;
+                shouldUnblock = false;
+            }
         }
-        else if (_dataStore.TryGetValue(key, out StoredValue? sv) && sv.List != null)
+        finally
         {
-            for (int i = 0; i < elements.Length; i++)
-                sv.List.Insert(0, elements[i]);
-            response = $":{sv.List.Count}\r\n";
-            shouldUnblock = true;
-        }
-        else
-        {
-            response = WrongTypeError;
-            shouldUnblock = false;
+            keyLock.Release();
         }
 
         await client.SendAsync(Encoding.UTF8.GetBytes(response).AsMemory(), SocketFlags.None);
         if (shouldUnblock)
         {
-            UnblockWaitingClients(key);
+            await UnblockWaitingClientsAsync(key);
             NotifyKeyModified(key, client);
         }
         return string.Empty;
@@ -667,9 +694,9 @@ partial class RedisServer
             "ZCARD" when parts.Length >= 2 => ZCard(parts[1]),
             "ZSCORE" when parts.Length >= 3 => ZScore(parts[1], parts[2]),
             "ZREM" when parts.Length >= 3 => ZRem(parts[1], parts[2]),
-            "LRANGE" when parts.Length >= 4 => LRange(parts[1], parts[2], parts[3]),
-            "LLEN" when parts.Length >= 2 => LLen(parts[1]),
-            "LPOP" when parts.Length >= 2 => LPop(parts),
+            "LRANGE" when parts.Length >= 4 => await LRange(parts[1], parts[2], parts[3]),
+            "LLEN" when parts.Length >= 2 => await LLen(parts[1]),
+            "LPOP" when parts.Length >= 2 => await LPop(parts),
             "TYPE" when parts.Length >= 2 => TypeOf(parts[1]),
             "XRANGE" when parts.Length >= 4 => XRange(parts[1], parts[2], parts[3]),
             _ => "-ERR unknown command\r\n"
@@ -866,8 +893,14 @@ partial class RedisServer
     }
 
     /// <summary>
-    /// Parses the optional PX or EX expiry argument from a SET command and returns the
-    /// absolute Unix millisecond expiry timestamp, or <c>null</c> if no expiry was specified.
+    /// Parses the optional PX, EX, PXAT, or EXAT expiry argument from a SET command and
+    /// returns the absolute Unix millisecond expiry timestamp, or <c>null</c> if no expiry
+    /// was specified.
+    /// <para>
+    /// PXAT and EXAT are stored as-is (already absolute), which is what the AOF layer
+    /// writes when it converts relative PX/EX values before appending, so replayed keys
+    /// always use the original absolute deadline rather than a newly-computed one.
+    /// </para>
     /// </summary>
     private static long? ParseSetExpiry(string[] parts)
     {
@@ -878,6 +911,10 @@ partial class RedisServer
                 return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + px;
             if (opt == "EX" && long.TryParse(parts[i + 1], out long ex))
                 return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (ex * 1000);
+            if (opt == "PXAT" && long.TryParse(parts[i + 1], out long pxat))
+                return pxat;
+            if (opt == "EXAT" && long.TryParse(parts[i + 1], out long exat))
+                return exat * 1000;
         }
         return null;
     }
@@ -885,15 +922,22 @@ partial class RedisServer
     /// <summary>
     /// Appends a command to the append-only file in RESP format, optionally fsyncing
     /// to disk when <c>appendfsync</c> is set to <c>always</c>.
+    /// <para>
+    /// Relative expiry options (<c>PX</c>, <c>EX</c>) are rewritten to absolute
+    /// <c>PXAT</c> before writing so that replaying the AOF after a restart does not
+    /// re-apply the expiry from the new current time, resurrecting already-expired keys.
+    /// </para>
     /// </summary>
     private void AppendToAof(string[] parts)
     {
         if (_aofFilePath == null) return;
 
+        var aofParts = RewriteExpiryForAof(parts);
+
         var sb = new StringBuilder();
-        sb.Append($"*{parts.Length}\r\n");
-        foreach (string part in parts)
-            sb.Append($"${part.Length}\r\n{part}\r\n");
+        sb.Append($"*{aofParts.Length}\r\n");
+        foreach (string part in aofParts)
+            sb.Append($"${Encoding.UTF8.GetByteCount(part)}\r\n{part}\r\n");
 
         using var fs = new FileStream(_aofFilePath, FileMode.Append, FileAccess.Write, FileShare.Read);
         byte[] data = Encoding.UTF8.GetBytes(sb.ToString());
@@ -903,8 +947,40 @@ partial class RedisServer
     }
 
     /// <summary>
+    /// Returns a copy of <paramref name="parts"/> with any relative <c>PX</c> or <c>EX</c>
+    /// expiry option replaced by an absolute <c>PXAT</c> millisecond timestamp, so the AOF
+    /// record captures the original deadline rather than a relative duration.
+    /// </summary>
+    private static string[] RewriteExpiryForAof(string[] parts)
+    {
+        for (int i = 3; i < parts.Length - 1; i++)
+        {
+            string opt = parts[i].ToUpper();
+            if (opt == "PX" && long.TryParse(parts[i + 1], out long px))
+            {
+                long absMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + px;
+                var result = (string[])parts.Clone();
+                result[i] = "PXAT";
+                result[i + 1] = absMs.ToString(CultureInfo.InvariantCulture);
+                return result;
+            }
+            if (opt == "EX" && long.TryParse(parts[i + 1], out long ex))
+            {
+                long absMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + (ex * 1000);
+                var result = (string[])parts.Clone();
+                result[i] = "PXAT";
+                result[i + 1] = absMs.ToString(CultureInfo.InvariantCulture);
+                return result;
+            }
+        }
+        return parts;
+    }
+
+    /// <summary>
     /// Replays all commands stored in the AOF file at <paramref name="path"/> into the
     /// in-memory data store during startup.
+    /// Keys whose absolute expiry timestamp has already passed are skipped so that
+    /// long-expired entries do not reappear after a restart.
     /// </summary>
     private void ReplayAof(string path)
     {
@@ -920,10 +996,22 @@ partial class RedisServer
             if (command == "SET" && parts.Length >= 3)
             {
                 long? expiryMs = ParseSetExpiry(parts);
-                _dataStore[parts[1]] = new StoredValue(parts[2], expiryMs);
+                // Recompute "now" per entry: a large AOF can take non-trivial time to
+                // replay, and a key may cross its expiry deadline mid-replay.
+                long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (!expiryMs.HasValue || nowMs < expiryMs.Value)
+                    _dataStore[parts[1]] = new StoredValue(parts[2], expiryMs);
             }
 
             offset += consumed;
         }
     }
+
+    /// <summary>
+    /// Returns (creating if necessary) a per-key <see cref="SemaphoreSlim"/> with an
+    /// initial and maximum count of 1, used to serialise all read-modify-write sequences
+    /// on a list key across concurrent client tasks.
+    /// </summary>
+    private SemaphoreSlim GetKeyLock(string key) =>
+        _keyLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
 }
