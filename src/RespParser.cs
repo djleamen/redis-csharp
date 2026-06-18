@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace codecrafters_redis;
 
 /// <summary>
@@ -5,6 +7,114 @@ namespace codecrafters_redis;
 /// </summary>
 static class RespParser
 {
+    // ── Byte-based parser ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Parses one complete RESP array command from the raw byte buffer
+    /// <paramref name="data"/>, returning the decoded command parts and the number of
+    /// <em>bytes</em> consumed.  Byte-accurate consumption means replica offset tracking
+    /// and binary-safe framing work correctly for non-ASCII payloads.
+    /// </summary>
+    /// <param name="data">Raw receive buffer.  May contain one or more complete commands
+    /// followed by a partial command.</param>
+    /// <param name="malformed"><c>true</c> when the data is recognisably invalid RESP
+    /// (e.g. a non-numeric array count) rather than merely incomplete.</param>
+    /// <returns>The parsed command parts and the number of bytes consumed, or
+    /// <c>(null, 0)</c> when <paramref name="data"/> does not yet hold a complete command.</returns>
+    public static (string[]? parts, int bytesConsumed) TryParseCommandFromBytes(
+        ReadOnlySpan<byte> data, out bool malformed)
+    {
+        malformed = false;
+
+        if (data.IsEmpty || data[0] != (byte)'*')
+            return (null, 0);
+
+        int arrayHeaderEnd = IndexOfCrLf(data);
+        if (arrayHeaderEnd < 0)
+            return (null, 0);
+
+        if (!TryParseAsciiInt(data.Slice(1, arrayHeaderEnd - 1), out int arrayLength) || arrayLength < 0)
+        {
+            malformed = true;
+            return (null, 0);
+        }
+
+        int offset = arrayHeaderEnd + 2;
+        var parts = new string[arrayLength];
+
+        for (int i = 0; i < arrayLength; i++)
+        {
+            if (offset >= data.Length)
+                return (null, 0);
+
+            if (data[offset] != (byte)'$')
+            {
+                malformed = offset < data.Length - 1;
+                return (null, 0);
+            }
+
+            int bulkHeaderEnd = IndexOfCrLf(data.Slice(offset));
+            if (bulkHeaderEnd < 0)
+                return (null, 0);
+
+            if (!TryParseAsciiInt(data.Slice(offset + 1, bulkHeaderEnd - 1), out int bulkLength) || bulkLength < 0)
+            {
+                malformed = true;
+                return (null, 0);
+            }
+
+            offset += bulkHeaderEnd + 2;
+
+            if (offset + bulkLength + 2 > data.Length)
+                return (null, 0);
+
+            parts[i] = Encoding.UTF8.GetString(data.Slice(offset, bulkLength));
+            offset += bulkLength + 2; // skip payload + \r\n
+        }
+
+        return (parts, offset);
+    }
+
+    /// <summary>
+    /// Overload without the <c>malformed</c> out parameter (for convenience callers).
+    /// </summary>
+    public static (string[]? parts, int bytesConsumed) TryParseCommandFromBytes(ReadOnlySpan<byte> data) =>
+        TryParseCommandFromBytes(data, out _);
+
+    /// <summary>
+    /// Returns the byte offset of the first <c>\r\n</c> sequence in <paramref name="span"/>,
+    /// or <c>-1</c> if none is present.
+    /// </summary>
+    private static int IndexOfCrLf(ReadOnlySpan<byte> span)
+    {
+        for (int i = 0; i < span.Length - 1; i++)
+            if (span[i] == '\r' && span[i + 1] == '\n')
+                return i;
+        return -1;
+    }
+
+    /// <summary>
+    /// Parses a decimal integer encoded as ASCII bytes.  Accepts an optional leading
+    /// <c>'-'</c> for negative values (e.g. <c>$-1</c> nil markers).
+    /// </summary>
+    private static bool TryParseAsciiInt(ReadOnlySpan<byte> span, out int value)
+    {
+        value = 0;
+        if (span.IsEmpty) return false;
+        bool negative = span[0] == (byte)'-';
+        int start = negative ? 1 : 0;
+        for (int i = start; i < span.Length; i++)
+        {
+            byte b = span[i];
+            if (b < (byte)'0' || b > (byte)'9') return false;
+            value = value * 10 + (b - '0');
+        }
+        if (negative) value = -value;
+        return span.Length > start;
+    }
+
+    // ── String-based parser (used by ReplayAof for text-encoded AOF files) ────
+
     /// <summary>
     /// Parses a RESP array from a raw UTF-8 string and returns the bulk-string elements.
     /// Returns an empty array when the input is not a valid RESP array.

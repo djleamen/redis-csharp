@@ -17,7 +17,7 @@ partial class RedisServer
             if (_channelSubscribers.TryGetValue(channel, out HashSet<Socket>? subs))
             {
                 count = subs.Count;
-                string msg = $"*3\r\n$7\r\nmessage\r\n${channel.Length}\r\n{channel}\r\n${message.Length}\r\n{message}\r\n";
+                string msg = $"*3\r\n$7\r\nmessage\r\n${Encoding.UTF8.GetByteCount(channel)}\r\n{channel}\r\n${Encoding.UTF8.GetByteCount(message)}\r\n{message}\r\n";
                 byte[] msgBytes = Encoding.UTF8.GetBytes(msg);
 
                 foreach (Socket sub in subs.ToList())
@@ -46,7 +46,7 @@ partial class RedisServer
                 _clientSubscriptions[client].Add(channel);
 
                 int subCount = _clientSubscriptions[client].Count;
-                string resp = $"*3\r\n$9\r\nsubscribe\r\n${channel.Length}\r\n{channel}\r\n:{subCount}\r\n";
+                string resp = $"*3\r\n$9\r\nsubscribe\r\n${Encoding.UTF8.GetByteCount(channel)}\r\n{channel}\r\n:{subCount}\r\n";
                 client.Send(Encoding.UTF8.GetBytes(resp));
             }
 
@@ -70,7 +70,7 @@ partial class RedisServer
                 clientChans?.Remove(channel);
 
                 int remaining = _clientSubscriptions.TryGetValue(client, out HashSet<string>? c) ? c.Count : 0;
-                string resp = $"*3\r\n$11\r\nunsubscribe\r\n${channel.Length}\r\n{channel}\r\n:{remaining}\r\n";
+                string resp = $"*3\r\n$11\r\nunsubscribe\r\n${Encoding.UTF8.GetByteCount(channel)}\r\n{channel}\r\n:{remaining}\r\n";
                 client.Send(Encoding.UTF8.GetBytes(resp));
             }
 
