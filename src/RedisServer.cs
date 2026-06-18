@@ -152,29 +152,39 @@ partial class RedisServer
     /// Services a single client connection from initial receive through clean-up on disconnect.
     /// Maintains per-connection state for authentication, transactions, subscriptions,
     /// and whether the connection is a replication stream.
-    /// Received data accumulates in a per-client text buffer (decoded with a stateful
-    /// UTF-8 decoder so multi-byte sequences split across reads stay intact) so commands
-    /// larger than one read and multiple pipelined commands in one segment are each
-    /// parsed exactly once.
+    /// <para>
+    /// Received data accumulates in a raw byte buffer and is parsed directly with
+    /// <see cref="RespParser.TryParseCommandFromBytes"/> so that the consumed offset is
+    /// byte-accurate. This supports arbitrary binary payloads and ensures RESP length
+    /// headers emitted by the server match the UTF-8 byte count of the payload, not its
+    /// character count.
+    /// </para>
     /// </summary>
     private async Task HandleClientAsync(Socket client)
     {
         var session = new ClientSession(_defaultUserFlags.Contains(NoPass));
-        var commandBuffer = new StringBuilder();
-        var decoder = Encoding.UTF8.GetDecoder();
-        byte[] buffer = new byte[1024];
-        char[] charBuffer = new char[Encoding.UTF8.GetMaxCharCount(buffer.Length)];
+        byte[] commandBuffer = new byte[4096];
+        int bufferFill = 0;
 
         while (true)
         {
             try
             {
-                int bytesRead = await client.ReceiveAsync(buffer.AsMemory(), SocketFlags.None);
-                if (bytesRead == 0) break;
+                // Grow the accumulation buffer when it is full.
+                if (bufferFill == commandBuffer.Length)
+                    Array.Resize(ref commandBuffer, commandBuffer.Length * 2);
 
-                int charCount = decoder.GetChars(buffer, 0, bytesRead, charBuffer, 0);
-                commandBuffer.Append(charBuffer, 0, charCount);
-                await DrainClientCommandsAsync(client, session, commandBuffer);
+                int bytesRead = await client.ReceiveAsync(
+                    commandBuffer.AsMemory(bufferFill), SocketFlags.None);
+                if (bytesRead == 0) break;
+                bufferFill += bytesRead;
+
+                int consumed = await DrainClientCommandsAsync(client, session, commandBuffer, bufferFill);
+                if (consumed > 0)
+                {
+                    Buffer.BlockCopy(commandBuffer, consumed, commandBuffer, 0, bufferFill - consumed);
+                    bufferFill -= consumed;
+                }
             }
             catch { break; }
         }
@@ -183,37 +193,40 @@ partial class RedisServer
     }
 
     /// <summary>
-    /// Dispatches every complete RESP command currently in <paramref name="commandBuffer"/>,
-    /// leaving partial trailing data for the next read. Data that cannot begin a RESP
-    /// array, or that violates the protocol mid-command, is discarded so it cannot wedge
-    /// the buffer — matching the previous behaviour of ignoring unparseable reads.
+    /// Dispatches every complete RESP command currently in the first
+    /// <paramref name="bufferFill"/> bytes of <paramref name="commandBuffer"/>, leaving
+    /// partial trailing data for the next read.  Returns the number of bytes consumed so
+    /// the caller can compact the buffer.
+    /// <para>
+    /// Data that cannot begin a RESP array, or that violates the protocol mid-command,
+    /// is skipped so it cannot wedge the buffer.
+    /// </para>
     /// </summary>
-    private async Task DrainClientCommandsAsync(Socket client, ClientSession session, StringBuilder commandBuffer)
+    private async Task<int> DrainClientCommandsAsync(
+        Socket client, ClientSession session, byte[] commandBuffer, int bufferFill)
     {
-        string data = commandBuffer.ToString();
         int processed = 0;
 
-        while (processed < data.Length)
+        while (processed < bufferFill)
         {
-            string remaining = data.Substring(processed);
-            var (parts, consumed) = RespParser.TryParseCommand(remaining, out bool malformed);
+            var span = commandBuffer.AsSpan(processed, bufferFill - processed);
+            var (parts, consumed) = RespParser.TryParseCommandFromBytes(span, out bool malformed);
             if (parts == null || consumed == 0)
             {
-                if (malformed || !remaining.StartsWith('*'))
-                    processed = data.Length;
+                if (malformed || span[0] != (byte)'*')
+                    processed = bufferFill;
                 break;
             }
 
             if (parts.Length > 0)
             {
-                string raw = consumed == remaining.Length ? remaining : remaining.Substring(0, consumed);
+                string raw = Encoding.UTF8.GetString(commandBuffer, processed, consumed);
                 await ProcessCommandAsync(client, session, parts, raw);
             }
             processed += consumed;
         }
 
-        if (processed > 0)
-            commandBuffer.Remove(0, processed);
+        return processed;
     }
 
     // ── Per-connection mutable state ─────────────────────────────────────────
@@ -341,8 +354,7 @@ partial class RedisServer
         return command switch
         {
             "PING" => session.IsSubscribedMode ? "*2\r\n$4\r\npong\r\n$0\r\n\r\n" : "+PONG\r\n",
-            "ECHO" when parts.Length > 1 => $"${parts[1].Length}\r\n{parts[1]}\r\n",
-            "INFO" => HandleInfo(parts),
+            "ECHO" when parts.Length > 1 => $"${Encoding.UTF8.GetByteCount(parts[1])}\r\n{parts[1]}\r\n",
             "CONFIG" when parts.Length >= 3 && parts[1].ToUpper() == "GET" => HandleConfigGet(parts[2]),
             "KEYS" when parts.Length >= 2 => HandleKeys(parts[1]),
             "REPLCONF" => HandleReplConf(client, parts),
@@ -388,7 +400,7 @@ partial class RedisServer
             string info = _isReplica
                 ? $"role:{role}"
                 : $"role:{role}\r\nmaster_replid:{ReplicationId}\r\nmaster_repl_offset:{ReplicationOffset}";
-            return $"${info.Length}\r\n{info}\r\n";
+            return $"${Encoding.UTF8.GetByteCount(info)}\r\n{info}\r\n";
         }
         return "$0\r\n\r\n";
     }
@@ -407,7 +419,7 @@ partial class RedisServer
             _ => null
         };
         return value != null
-            ? $"*2\r\n${parameter.Length}\r\n{parameter}\r\n${value.Length}\r\n{value}\r\n"
+            ? $"*2\r\n${Encoding.UTF8.GetByteCount(parameter)}\r\n{parameter}\r\n${Encoding.UTF8.GetByteCount(value)}\r\n{value}\r\n"
             : "*0\r\n";
     }
 
@@ -425,7 +437,7 @@ partial class RedisServer
         var sb = new StringBuilder();
         sb.Append($"*{matchingKeys.Count}\r\n");
         foreach (var key in matchingKeys)
-            sb.Append($"${key.Length}\r\n{key}\r\n");
+            sb.Append($"${Encoding.UTF8.GetByteCount(key)}\r\n{key}\r\n");
         return sb.ToString();
     }
 
@@ -676,7 +688,7 @@ partial class RedisServer
         return command switch
         {
             "PING" => "+PONG\r\n",
-            "ECHO" when parts.Length > 1 => $"${parts[1].Length}\r\n{parts[1]}\r\n",
+            "ECHO" when parts.Length > 1 => $"${Encoding.UTF8.GetByteCount(parts[1])}\r\n{parts[1]}\r\n",
             "SET" when parts.Length >= 3 => ExecSet(parts, client),
             "GET" when parts.Length > 1 => GetStringValue(parts[1]),
             "INCR" when parts.Length >= 2 => IncrementKey(parts[1]),
@@ -729,7 +741,7 @@ partial class RedisServer
         }
 
         return sv.Value != null
-            ? $"${sv.Value.Length}\r\n{sv.Value}\r\n"
+            ? $"${Encoding.UTF8.GetByteCount(sv.Value)}\r\n{sv.Value}\r\n"
             : WrongTypeError;
     }
 
@@ -823,10 +835,10 @@ partial class RedisServer
         sb.Append("*4\r\n");
         sb.Append("$5\r\nflags\r\n");
         sb.Append($"*{flags.Count}\r\n");
-        foreach (var f in flags) sb.Append($"${f.Length}\r\n{f}\r\n");
+        foreach (var f in flags) sb.Append($"${Encoding.UTF8.GetByteCount(f)}\r\n{f}\r\n");
         sb.Append("$9\r\npasswords\r\n");
         sb.Append($"*{_defaultUserPasswords.Count}\r\n");
-        foreach (var p in _defaultUserPasswords) sb.Append($"${p.Length}\r\n{p}\r\n");
+        foreach (var p in _defaultUserPasswords) sb.Append($"${Encoding.UTF8.GetByteCount(p)}\r\n{p}\r\n");
         return sb.ToString();
     }
 

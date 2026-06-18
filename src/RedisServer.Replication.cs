@@ -69,7 +69,7 @@ partial class RedisServer
 
             string portStr = replicaPort.ToString();
             await SendAndReceiveAsync(stream, buffer,
-                $"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${portStr.Length}\r\n{portStr}\r\n");
+                $"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${Encoding.UTF8.GetByteCount(portStr)}\r\n{portStr}\r\n");
 
             await SendAndReceiveAsync(stream, buffer,
                 "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n");
@@ -115,14 +115,20 @@ partial class RedisServer
                 bytesRead += n;
             }
 
-            var commandBuffer = new StringBuilder();
+            // Switch to a byte accumulation buffer for propagated commands so the
+            // consumed offset is byte-accurate and _replicaOffset tracks correctly.
+            byte[] replicaBuf = new byte[4096];
+            int replicaFill = 0;
             if (bytesRead > rdbDataEnd)
-                commandBuffer.Append(Encoding.UTF8.GetString(buffer, rdbDataEnd, bytesRead - rdbDataEnd));
+            {
+                int leftover = bytesRead - rdbDataEnd;
+                if (leftover > replicaBuf.Length)
+                    Array.Resize(ref replicaBuf, leftover * 2);
+                Buffer.BlockCopy(buffer, rdbDataEnd, replicaBuf, 0, leftover);
+                replicaFill = leftover;
+            }
 
-            if (commandBuffer.Length > 0)
-                await ProcessBufferedCommandsAsync(commandBuffer, stream);
-
-            await ReceiveReplicatedCommandsAsync(stream, buffer, commandBuffer);
+            await ReceiveReplicatedCommandsAsync(stream, replicaBuf, replicaFill);
         }
         catch
         {
@@ -132,17 +138,60 @@ partial class RedisServer
 
     /// <summary>
     /// Continuously reads propagated commands from the master until the connection closes.
+    /// Accumulates raw bytes so the consumed offset is byte-accurate and
+    /// <see cref="_replicaOffset"/> tracks the correct byte position.
     /// </summary>
-    private async Task ReceiveReplicatedCommandsAsync(NetworkStream stream, byte[] buffer, StringBuilder commandBuffer)
+    private async Task ReceiveReplicatedCommandsAsync(NetworkStream stream, byte[] initialBuf, int initialFill)
     {
+        byte[] buf = new byte[Math.Max(4096, initialBuf.Length)];
+        int fill = 0;
+
+        if (initialFill > 0)
+        {
+            Buffer.BlockCopy(initialBuf, 0, buf, 0, initialFill);
+            fill = initialFill;
+            fill = await ProcessReplicaBufferAsync(buf, fill, stream);
+        }
+
+        byte[] recv = new byte[4096];
         while (true)
         {
-            int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+            int bytesRead = await stream.ReadAsync(recv, 0, recv.Length);
             if (bytesRead == 0) break;
 
-            commandBuffer.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
-            await ProcessBufferedCommandsAsync(commandBuffer, stream);
+            if (fill + bytesRead > buf.Length)
+                Array.Resize(ref buf, Math.Max(buf.Length * 2, fill + bytesRead));
+
+            Buffer.BlockCopy(recv, 0, buf, fill, bytesRead);
+            fill += bytesRead;
+            fill = await ProcessReplicaBufferAsync(buf, fill, stream);
         }
+    }
+
+    /// <summary>
+    /// Drains all complete RESP commands from the first <paramref name="fill"/> bytes of
+    /// <paramref name="buf"/>, compacts the buffer, and returns the remaining fill.
+    /// </summary>
+    private async Task<int> ProcessReplicaBufferAsync(byte[] buf, int fill, NetworkStream stream)
+    {
+        int processed = 0;
+
+        while (processed < fill)
+        {
+            var (cmd, consumed) = RespParser.TryParseCommandFromBytes(buf.AsSpan(processed, fill - processed));
+            if (cmd == null || consumed == 0) break;
+
+            await ProcessReplicatedCommandAsync(cmd, stream, consumed);
+            processed += consumed;
+        }
+
+        if (processed > 0)
+        {
+            Buffer.BlockCopy(buf, processed, buf, 0, fill - processed);
+            fill -= processed;
+        }
+
+        return fill;
     }
 
     /// <summary>
@@ -158,36 +207,15 @@ partial class RedisServer
     }
 
     /// <summary>
-    /// Drains all complete RESP commands from <paramref name="buffer"/> and processes each one.
-    /// Partial data at the end of the buffer is left for the next read.
-    /// </summary>
-    private async Task ProcessBufferedCommandsAsync(StringBuilder buffer, NetworkStream stream)
-    {
-        string data = buffer.ToString();
-        int processed = 0;
-
-        while (true)
-        {
-            string remaining = data.Substring(processed);
-            if (remaining.Length == 0) break;
-
-            var (cmd, length) = RespParser.TryParseCommand(remaining);
-            if (cmd == null || length == 0) break;
-
-            await ProcessReplicatedCommandAsync(cmd, stream, length);
-            processed += length;
-        }
-
-        if (processed > 0)
-            buffer.Remove(0, processed);
-    }
-
-    /// <summary>
     /// Applies a single command propagated from the master and advances the replica offset.
     /// Responds to REPLCONF GETACK with the offset captured <em>before</em> processing the command,
     /// matching Redis's protocol where GETACK itself is counted only after the reply is sent.
+    /// <para>
+    /// <paramref name="commandBytes"/> is the exact byte count consumed by the parser,
+    /// ensuring <see cref="_replicaOffset"/> is byte-accurate for non-ASCII payloads.
+    /// </para>
     /// </summary>
-    private async Task ProcessReplicatedCommandAsync(string[] parts, NetworkStream stream, int commandLength)
+    private async Task ProcessReplicatedCommandAsync(string[] parts, NetworkStream stream, int commandBytes)
     {
         if (parts.Length == 0) return;
 
@@ -196,7 +224,8 @@ partial class RedisServer
 
         if (command == "REPLCONF" && parts.Length >= 3 && parts[1].ToUpper() == "GETACK")
         {
-            string ack = $"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${offsetBefore.ToString().Length}\r\n{offsetBefore}\r\n";
+            string offsetStr = offsetBefore.ToString();
+            string ack = $"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${Encoding.UTF8.GetByteCount(offsetStr)}\r\n{offsetStr}\r\n";
             await stream.WriteAsync(Encoding.UTF8.GetBytes(ack));
             await stream.FlushAsync();
         }
@@ -207,7 +236,7 @@ partial class RedisServer
             _dataStore[parts[1]] = new StoredValue(parts[2], expiry);
         }
 
-        _replicaOffset += commandLength;
+        _replicaOffset += commandBytes;
     }
 
     /// <summary>

@@ -57,7 +57,7 @@ partial class RedisServer
         }
 
         UnblockWaitingStreamReaders(key);
-        return $"${entryId.Length}\r\n{entryId}\r\n";
+        return $"${Encoding.UTF8.GetByteCount(entryId)}\r\n{entryId}\r\n";
     }
 
     private async Task<string> XRead(string[] parts)
@@ -305,8 +305,7 @@ partial class RedisServer
         foreach (var (key, entries) in results)
         {
             sb.Append("*2\r\n");
-            sb.Append($"${key.Length}\r\n{key}\r\n");
-            sb.Append(BuildStreamEntryArray(entries));
+            sb.Append($"${Encoding.UTF8.GetByteCount(key)}\r\n{key}\r\n");
         }
 
         return sb.ToString();
@@ -323,13 +322,13 @@ partial class RedisServer
         foreach (var entry in entries)
         {
             sb.Append("*2\r\n");
-            sb.Append($"${entry.Id.Length}\r\n{entry.Id}\r\n");
+            sb.Append($"${Encoding.UTF8.GetByteCount(entry.Id)}\r\n{entry.Id}\r\n");
             sb.Append($"*{entry.Fields.Count * 2}\r\n");
 
             foreach (var kvp in entry.Fields)
             {
-                sb.Append($"${kvp.Key.Length}\r\n{kvp.Key}\r\n");
-                sb.Append($"${kvp.Value.Length}\r\n{kvp.Value}\r\n");
+                sb.Append($"${Encoding.UTF8.GetByteCount(kvp.Key)}\r\n{kvp.Key}\r\n");
+                sb.Append($"${Encoding.UTF8.GetByteCount(kvp.Value)}\r\n{kvp.Value}\r\n");
             }
         }
 

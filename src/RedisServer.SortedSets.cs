@@ -85,7 +85,7 @@ partial class RedisServer
         var sb = new StringBuilder();
         sb.Append($"*{stop - start + 1}\r\n");
         for (int i = start; i <= stop; i++)
-            sb.Append($"${sv.SortedSet[i].Member.Length}\r\n{sv.SortedSet[i].Member}\r\n");
+            sb.Append($"${Encoding.UTF8.GetByteCount(sv.SortedSet[i].Member)}\r\n{sv.SortedSet[i].Member}\r\n");
 
         return sb.ToString();
     }
@@ -118,7 +118,7 @@ partial class RedisServer
         if (entry == null) return "$-1\r\n";
 
         string scoreStr = entry.Score.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        return $"${scoreStr.Length}\r\n{scoreStr}\r\n";
+        return $"${Encoding.UTF8.GetByteCount(scoreStr)}\r\n{scoreStr}\r\n";
     }
 
     /// <summary>

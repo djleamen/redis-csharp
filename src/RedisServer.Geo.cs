@@ -73,7 +73,7 @@ partial class RedisServer
                     var (decLon, decLat) = GeoUtils.DecodeGeoHash((long)entry.Score);
                     string lonStr = decLon.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
                     string latStr = decLat.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
-                    sb.Append($"*2\r\n${lonStr.Length}\r\n{lonStr}\r\n${latStr.Length}\r\n{latStr}\r\n");
+                    sb.Append($"*2\r\n${Encoding.UTF8.GetByteCount(lonStr)}\r\n{lonStr}\r\n${Encoding.UTF8.GetByteCount(latStr)}\r\n{latStr}\r\n");
                     continue;
                 }
             }
@@ -101,7 +101,7 @@ partial class RedisServer
         var (lon2, lat2) = GeoUtils.DecodeGeoHash((long)e2.Score);
         double dist = GeoUtils.DistanceMeters(lat1, lon1, lat2, lon2);
         string distStr = dist.ToString("F4", System.Globalization.CultureInfo.InvariantCulture);
-        return $"${distStr.Length}\r\n{distStr}\r\n";
+        return $"${Encoding.UTF8.GetByteCount(distStr)}\r\n{distStr}\r\n";
     }
 
     /// <summary>
@@ -148,7 +148,7 @@ partial class RedisServer
         var sb = new StringBuilder();
         sb.Append($"*{matches.Count}\r\n");
         foreach (var m in matches)
-            sb.Append($"${m.Length}\r\n{m}\r\n");
+            sb.Append($"${Encoding.UTF8.GetByteCount(m)}\r\n{m}\r\n");
         return sb.ToString();
     }
 }

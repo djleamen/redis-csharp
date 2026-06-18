@@ -265,8 +265,77 @@ public class RegressionTests
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Helpers
+    // 4. Byte-based RESP: multi-byte UTF-8 payloads must round-trip correctly.
+    //    Before the fix, responses used string.Length (char count) for the RESP
+    //    bulk-string header, which is wrong for non-ASCII characters — e.g. "é"
+    //    is 1 char but 2 bytes.  A compliant client would reject such responses
+    //    because the declared length would not match the actual payload bytes.
     // ──────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ByteBasedResp_MultibyteSET_GET_RoundTrips()
+    {
+        await using var server = await RedisServerFixture.StartAsync();
+        await using var client = await RedisClient.ConnectAsync(server.Port);
+
+        // "café" — 4 chars but 5 UTF-8 bytes ('é' is U+00E9, encoded as 0xC3 0xA9).
+        const string value = "café";
+        string setResp = await client.SendCommandAsync("SET", "k", value);
+        Assert.Contains("+OK", setResp);
+
+        string getResp = await client.SendCommandAsync("GET", "k");
+
+        // The response must declare the correct byte length (5, not 4).
+        int expectedBytes = Encoding.UTF8.GetByteCount(value);
+        Assert.StartsWith($"${expectedBytes}\r\n", getResp);
+        Assert.Contains(value, getResp);
+    }
+
+    [Fact]
+    public async Task ByteBasedResp_MultibyteECHO_CorrectByteCount()
+    {
+        await using var server = await RedisServerFixture.StartAsync();
+        await using var client = await RedisClient.ConnectAsync(server.Port);
+
+        // "日本語" — 3 chars but 9 UTF-8 bytes.
+        const string payload = "日本語";
+        string resp = await client.SendCommandAsync("ECHO", payload);
+
+        int expectedBytes = Encoding.UTF8.GetByteCount(payload);
+        Assert.StartsWith($"${expectedBytes}\r\n", resp);
+        Assert.Contains(payload, resp);
+    }
+
+    [Fact]
+    public async Task ByteBasedResp_MultibyteKey_KeysListCorrect()
+    {
+        await using var server = await RedisServerFixture.StartAsync();
+        await using var client = await RedisClient.ConnectAsync(server.Port);
+
+        // Key name with a multi-byte character.
+        const string key = "clé";
+        await client.SendCommandAsync("SET", key, "v");
+
+        string keysResp = await client.SendCommandAsync("KEYS", "*");
+        int expectedBytes = Encoding.UTF8.GetByteCount(key);
+        Assert.Contains($"${expectedBytes}\r\n{key}", keysResp);
+    }
+
+    [Fact]
+    public async Task ByteBasedResp_MultibyteListElement_LRangeCorrect()
+    {
+        await using var server = await RedisServerFixture.StartAsync();
+        await using var client = await RedisClient.ConnectAsync(server.Port);
+
+        const string element = "über";   // 4 chars, 5 UTF-8 bytes
+        await client.SendCommandAsync("RPUSH", "mylist", element);
+
+        string rangeResp = await client.SendCommandAsync("LRANGE", "mylist", "0", "-1");
+        int expectedBytes = Encoding.UTF8.GetByteCount(element);
+        Assert.Contains($"${expectedBytes}\r\n{element}", rangeResp);
+    }
+
+
 
     private static string BuildResp(params string[] args)
     {
